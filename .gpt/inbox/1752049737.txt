@@ -1,0 +1,7 @@
+{
+  "phase": "inbox",
+  "conversation_id": "realrun-002",
+  "timestamp": "2025-07-09T07:00:00Z",
+  "role": "user",
+  "content": "Use existing SRS at docs/SRS.md for PLAN phase validation. This is the official bootstrap point for realrun-002."
+}
