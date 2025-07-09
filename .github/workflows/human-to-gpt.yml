@@ -9,7 +9,8 @@ on:
         type: string
 
 permissions:
-  contents: write        # Grant GITHUB_TOKEN push rights
+  contents: write        # allow pushes and branch/PR creation
+  issues:   write        # allow creating issues via `gh issue create`
 
 jobs:
   intake:
@@ -55,7 +56,7 @@ jobs:
         ts=$(date +%s)
         file=".gpt/inbox/${ts}.txt"
         mkdir -p .gpt/inbox
-        printf '%s\n' "$PAYLOAD" > "$file"     # No leading indentation
+        printf '%s\n' "$PAYLOAD" > "$file"     # No indentation
         echo "Wrote payload to $file"
         echo "TIMESTAMP=$ts" >> "$GITHUB_OUTPUT"
 
@@ -101,7 +102,7 @@ jobs:
             PR_URL=""
           fi
 
-          # Always expose outputs, even if empty
+          # Always expose outputs
           echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
         fi
@@ -119,12 +120,22 @@ jobs:
         if [ -n "${PR_URL:-}" ]; then
           body="$body\n\nRelated PR: $PR_URL"
         fi
-        ISSUE_URL=$(gh issue create \
-                     --title "GPT Intake $TS" \
-                     --body  "$body" \
-                     --label "gpt-intake")
-        echo "✅ Issue opened: $ISSUE_URL"
-        ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
+
+        # Attempt to create the issue
+        if ISSUE_URL=$(gh issue create \
+                         --title "GPT Intake $TS" \
+                         --body  "$body" \
+                         --label "gpt-intake"); then
+          echo "✅ Issue opened: $ISSUE_URL"
+          ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
+        else
+          echo "❌ Issue creation failed; proceeding without issue." >&2
+          ISSUE_URL=""
+          ISSUE_NUMBER=""
+        fi
+
+        # Expose outputs (even if empty)
+        echo "ISSUE_URL=$ISSUE_URL"     >> "$GITHUB_OUTPUT"
         echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
     #-------------------------------------------------
@@ -137,7 +148,7 @@ jobs:
         max_checks=60          # 60 × 60 s = 1 h
         for ((i=1;i<=max_checks;i++)); do
           echo "Polling issue #$ISSUE_NUMBER for 'ACK' comment (attempt $i/$max_checks)…"
-          if gh issue view "$ISSUE_NUMBER" \
+          if [ -n "$ISSUE_NUMBER" ] && gh issue view "$ISSUE_NUMBER" \
                --json comments \
                --jq '.comments[].body' | grep -q '^ACK$'; then
             echo "✅ ACK detected – workflow complete."
