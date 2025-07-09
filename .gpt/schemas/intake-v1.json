@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/gpt-telemetry/intake-v1.json",
+  "title": "GPT Telemetry Intake v1",
+  "type": "object",
+  "required": ["phase", "conversation_id", "timestamp", "role", "content"],
+  "properties": {
+    "phase": { "const": "inbox" },
+    "conversation_id": { "type": "string", "minLength": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "role": { "type": "string", "enum": ["user", "assistant", "system"] },
+    "content": { "type": "string" },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "rating": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 5
+    }
+  },
+  "additionalProperties": false
+}
