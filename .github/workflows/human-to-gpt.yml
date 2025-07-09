@@ -6,7 +6,7 @@ on:
       payload_raw:
         description: "Loosely-formatted JSON string (quotes optional, CLI-safe)"
         required: true
-        default: '{"phase":"inbox","conversation_id":"realrun-002","timestamp":"2025-07-09T07:15:00Z","role":"user","content":"Auto-processing patch for IMPLEMENT phase."}'
+        default: '{"phase":"inbox","conversation_id":"realrun-002","timestamp":"2025-07-09T07:30:00Z","role":"user","content":"Patch staged for implementation. Proceed with validation."}'
         type: string
 
 permissions:
@@ -17,6 +17,10 @@ jobs:
   intake:
     runs-on: [self-hosted, windows]
     timeout-minutes: 90
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
@@ -36,24 +40,15 @@ jobs:
         run: |
           set -euo pipefail
           echo "RAW INPUT: $PAYLOAD_RAW"
-
-          # parse into JSON
           echo "$PAYLOAD_RAW" | jq -Rs 'fromjson' > /tmp/payload.json || {
             echo "❌ Input is not valid JSON." >&2
             exit 1
           }
-
-          # install the AJV CLI + formats plugin
           npm install -g ajv-cli@5 ajv-formats@2 >/dev/null 2>&1
-
-          # validate against your schema
-          ajv validate \
-            -s .gpt/schemas/intake-v1.json \
-            -d /tmp/payload.json || {
-              echo "❌ Schema validation failed." >&2
-              exit 1
-            }
-
+          ajv validate -s .gpt/schemas/intake-v1.json -d /tmp/payload.json || {
+            echo "❌ Schema validation failed." >&2
+            exit 1
+          }
           phase=$(jq -r '.phase // empty' /tmp/payload.json)
           if [[ -z "$phase" ]]; then
             echo "❌ No phase specified in payload." >&2
@@ -63,7 +58,6 @@ jobs:
             echo "❌ Unsupported phase '$phase'. Only 'inbox' is allowed." >&2
             exit 1
           fi
-
           echo "✅ Payload and phase validated."
 
       - name: Write payload to .gpt/inbox
@@ -84,22 +78,18 @@ jobs:
             echo "ℹ️ No .gpt/status.json — cannot determine phase."
             exit 0
           fi
-
           PHASE=$(jq -r .current_phase .gpt/status.json)
           if [[ "$PHASE" != "IMPLEMENT" ]]; then
             echo "ℹ️ Not in IMPLEMENT phase — skipping patch validation."
             exit 0
           fi
-
           PATCH=$(ls -1t .gpt/patches/*.patch 2>/dev/null | head -n1 || true)
           if [[ -z "$PATCH" ]]; then
             echo "ℹ️ No patch file found — skipping."
             exit 0
           fi
-
           echo "🔍 Found patch: $PATCH"
           sha256sum "$PATCH" | tee "$PATCH.sha256"
-
           if [[ -f .gpt/scripts/validate-tests.sh ]]; then
             echo "🧪 Running tests..."
             bash .gpt/scripts/validate-tests.sh
@@ -125,7 +115,6 @@ jobs:
           git add .gpt/inbox || true
           git add .gpt/patches/*.sha256 || true
           git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
-
           if git push origin HEAD:main; then
             echo "BRANCH=" >> $GITHUB_OUTPUT
             echo "PR_URL=" >> $GITHUB_OUTPUT
@@ -139,7 +128,6 @@ jobs:
               --body "Automated intake PR for payload $TS")
             echo "BRANCH=$BRANCH" >> $GITHUB_OUTPUT
             echo "PR_URL=$PR_URL" >> $GITHUB_OUTPUT
-          fi
 
       - name: Open tracking issue
         id: issue
