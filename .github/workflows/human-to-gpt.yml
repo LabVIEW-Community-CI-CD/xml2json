@@ -6,7 +6,7 @@ on:
       payload_raw:
         description: "Loosely-formatted JSON string (quotes optional, CLI-safe)"
         required: true
-        default: '{"phase":"inbox","conversation_id":"realrun-001","timestamp":"2025-07-09T06:12:00Z","role":"user","content":"Use existing SRS at docs/SRS.md for PLAN phase validation. Begin real run."}'
+        default: '{"phase":"inbox","conversation_id":"realrun-002","timestamp":"2025-07-09T07:15:00Z","role":"user","content":"Auto-processing patch for IMPLEMENT phase."}'
         type: string
 
 permissions:
@@ -66,6 +66,38 @@ jobs:
           echo "Wrote payload to $file"
           echo "TIMESTAMP=$ts" >> "$GITHUB_OUTPUT"
 
+      - name: If in IMPLEMENT phase, verify patch and hash
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f .gpt/status.json ]; then
+            echo "ℹ️ No .gpt/status.json — cannot determine phase."
+            exit 0
+          fi
+
+          PHASE=$(jq -r '.current_phase' .gpt/status.json)
+          if [ "$PHASE" != "IMPLEMENT" ]; then
+            echo "ℹ️ Not in IMPLEMENT phase — skipping patch validation."
+            exit 0
+          fi
+
+          PATCH=$(ls -1t .gpt/patches/*.patch 2>/dev/null | head -n1 || true)
+          if [ -z "$PATCH" ]; then
+            echo "ℹ️ No patch file found — skipping."
+            exit 0
+          fi
+
+          echo "🔍 Found patch: $PATCH"
+          sha256sum "$PATCH" | tee "$PATCH.sha256"
+
+          if [ -f .gpt/scripts/validate-tests.sh ]; then
+            echo "🧪 Running tests..."
+            bash .gpt/scripts/validate-tests.sh
+          else
+            echo "⚠️ No test validation script found — skipping test execution."
+          fi
+
       - name: Upload intake artifact
         uses: actions/upload-artifact@v4
         with:
@@ -79,13 +111,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
           git add .gpt/inbox || true
+          git add .gpt/patches/*.sha256 || true
           git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
-
           if git push origin HEAD:main; then
             echo "✅ Changes pushed to main."
             echo "BRANCH="   >> "$GITHUB_OUTPUT"
@@ -102,7 +132,6 @@ jobs:
             echo "✅ PR opened: $PR_URL"
             echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
             echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Open tracking issue
         id: issue
@@ -114,11 +143,11 @@ jobs:
           set -euo pipefail
           if [ -n "${PR_URL:-}" ]; then
             body=$(cat <<EOF
-          Payload timestamp: $TS
+Payload timestamp: $TS
 
-          Related PR: $PR_URL
-          EOF
-          )
+Related PR: $PR_URL
+EOF
+)
           else
             body="Payload timestamp: $TS"
           fi
