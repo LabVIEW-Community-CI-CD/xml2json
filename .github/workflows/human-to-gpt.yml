@@ -1,74 +1,149 @@
- jobs:
-   intake:
-+    permissions:
-+      contents: write        # <-- grant GITHUB_TOKEN push rights
-     runs-on: ubuntu-latest
-     timeout-minutes: 90
+name: Human ↔ GPT Intake
 
-     steps:
-     - uses: actions/checkout@v4
+on:
+  workflow_dispatch:
+    inputs:
+      payload:
+        description: "Raw JSON describing the message"
+        required: true
+        type: string
 
-@@ - Forty lines down in the commit step…
-     - name: Commit & push (PR fallback if protected)
-       id: commit
-       env:
-         TS: ${{ steps.write.outputs.TIMESTAMP }}
-         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-       run: |
--        set -euo pipefail
-+        set -euo pipefail
+permissions:
+  contents: write        # Grant GITHUB_TOKEN push rights
 
-         git config user.name  "github-actions[bot]"
-         git config user.email "github-actions[bot]@users.noreply.github.com"
-         git add .gpt/inbox || true
-         git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
+jobs:
+  intake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90          # Global safety net
 
--        if git push origin HEAD:main; then
--          echo "✅ Changes pushed to main."
--          echo "BRANCH="   >> "$GITHUB_OUTPUT"
--          echo "PR_URL="   >> "$GITHUB_OUTPUT"
--        else
--          echo "ℹ️  Direct push blocked – opening PR."
--          BRANCH="gpt-input-$TS"
--          git push -u origin HEAD:$BRANCH
--          PR_URL=$(gh pr create \
--                     --base main \
--                     --head "$BRANCH" \
--                     --title "GPT Intake $TS" \
--                     --body  "Automated intake PR for payload $TS")
--          echo "✅ PR opened: $PR_URL"
--          echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
--          echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
--        fi
-+        # try direct push
-+        if git push origin HEAD:main; then
-+          echo "✅ Changes pushed to main."
-+          echo "BRANCH="   >> "$GITHUB_OUTPUT"
-+          echo "PR_URL="   >> "$GITHUB_OUTPUT"
-+        else
-+          echo "ℹ️  Direct push blocked (403). Attempting PR fallback…"
-+          BRANCH="gpt-input-$TS"
-+
-+          # try branch push
-+          if git push -u origin HEAD:$BRANCH; then
-+            echo "✅ Branch pushed to $BRANCH."
-+            # attempt to open PR
-+            if PR_URL=$(gh pr create \
-+                         --base main \
-+                         --head "$BRANCH" \
-+                         --title "GPT Intake $TS" \
-+                         --body  "Automated intake PR for payload $TS"); then
-+              echo "✅ PR opened: $PR_URL"
-+            else
-+              echo "❌ PR creation failed; proceeding without a PR." >&2
-+              PR_URL=""
-+            fi
-+          else
-+            echo "❌ Branch push to $BRANCH failed (permissions). Skipping PR." >&2
-+            PR_URL=""
-+          fi
-+
-+          # always expose outputs, even if empty
-+          echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
-+          echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
-+        fi
+    steps:
+    #-------------------------------------------------
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    #-------------------------------------------------
+    - name: Validate input (JSON + phase=inbox)
+      id: validate
+      env:
+        PAYLOAD: ${{ github.event.inputs.payload }}
+      run: |
+        set -euo pipefail
+        # 1. Is it valid JSON?
+        if ! echo "$PAYLOAD" | jq -e . >/dev/null; then
+          echo "❌ Input is not valid JSON." >&2
+          exit 1
+        fi
+        # 2. Does it contain phase == inbox?
+        phase=$(echo "$PAYLOAD" | jq -r '.phase // empty')
+        if [ -z "$phase" ]; then
+          echo "❌ No phase specified in payload." >&2
+          exit 1
+        fi
+        if [ "$phase" != "inbox" ]; then
+          echo "❌ Unsupported phase ‘$phase’. Only ‘inbox’ is allowed." >&2
+          exit 1
+        fi
+        echo "✅ Payload and phase validated."
+
+    #-------------------------------------------------
+    - name: Write payload to .gpt/inbox file
+      id: write
+      env:
+        PAYLOAD: ${{ github.event.inputs.payload }}
+      run: |
+        set -euo pipefail
+        ts=$(date +%s)
+        file=".gpt/inbox/${ts}.txt"
+        mkdir -p .gpt/inbox
+        printf '%s\n' "$PAYLOAD" > "$file"     # No leading indentation
+        echo "Wrote payload to $file"
+        echo "TIMESTAMP=$ts" >> "$GITHUB_OUTPUT"
+
+    #-------------------------------------------------
+    - name: Commit & push (PR fallback if protected)
+      id: commit
+      env:
+        TS:       ${{ steps.write.outputs.TIMESTAMP }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add .gpt/inbox || true
+        git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
+
+        # Try direct push
+        if git push origin HEAD:main; then
+          echo "✅ Changes pushed to main."
+          echo "BRANCH="   >> "$GITHUB_OUTPUT"
+          echo "PR_URL="   >> "$GITHUB_OUTPUT"
+        else
+          echo "ℹ️  Direct push blocked (403). Attempting PR fallback…"
+          BRANCH="gpt-input-$TS"
+
+          # Try branch push
+          if git push -u origin HEAD:$BRANCH; then
+            echo "✅ Branch pushed to $BRANCH."
+            # Attempt to open PR
+            if PR_URL=$(gh pr create \
+                         --base main \
+                         --head "$BRANCH" \
+                         --title "GPT Intake $TS" \
+                         --body  "Automated intake PR for payload $TS"); then
+              echo "✅ PR opened: $PR_URL"
+            else
+              echo "❌ PR creation failed; proceeding without a PR." >&2
+              PR_URL=""
+            fi
+          else
+            echo "❌ Branch push to $BRANCH failed (permissions). Skipping PR." >&2
+            PR_URL=""
+          fi
+
+          # Always expose outputs, even if empty
+          echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
+        fi
+
+    #-------------------------------------------------
+    - name: Open tracking issue
+      id: issue
+      env:
+        TS:       ${{ steps.write.outputs.TIMESTAMP }}
+        PR_URL:   ${{ steps.commit.outputs.PR_URL }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        body="Payload timestamp: $TS"
+        if [ -n "${PR_URL:-}" ]; then
+          body="$body\n\nRelated PR: $PR_URL"
+        fi
+        ISSUE_URL=$(gh issue create \
+                     --title "GPT Intake $TS" \
+                     --body  "$body" \
+                     --label "gpt-intake")
+        echo "✅ Issue opened: $ISSUE_URL"
+        ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
+        echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+
+    #-------------------------------------------------
+    - name: Wait for ACK comment (max 60 min)
+      env:
+        GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+        ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
+      run: |
+        set -euo pipefail
+        max_checks=60          # 60 × 60 s = 1 h
+        for ((i=1;i<=max_checks;i++)); do
+          echo "Polling issue #$ISSUE_NUMBER for 'ACK' comment (attempt $i/$max_checks)…"
+          if gh issue view "$ISSUE_NUMBER" \
+               --json comments \
+               --jq '.comments[].body' | grep -q '^ACK$'; then
+            echo "✅ ACK detected – workflow complete."
+            exit 0
+          fi
+          sleep 60
+        done
+        echo "❌ No ACK after $((max_checks)) minutes – failing job." >&2
+        exit 2
