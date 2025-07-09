@@ -6,6 +6,7 @@ on:
       payload_raw:
         description: "Loosely-formatted JSON string (quotes optional, CLI-safe)"
         required: true
+        default: '{"phase":"inbox","conversation_id":"realrun-001","timestamp":"2025-07-09T06:12:00Z","role":"user","content":"Use existing SRS at docs/SRS.md for PLAN phase validation. Begin real run."}'
         type: string
 
 permissions:
@@ -109,7 +110,7 @@ jobs:
           set -euo pipefail
           body="Payload timestamp: $TS"
           if [ -n "${PR_URL:-}" ]; then
-            body="$body\n\nRelated PR: $PR_URL"
+            body="${body}\n\nRelated PR: $PR_URL"
           fi
           ISSUE_URL=$(gh issue create \
                        --title "GPT Intake $TS" \
