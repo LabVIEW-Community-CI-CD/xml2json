@@ -58,17 +58,15 @@ jobs:
 
       - name: Write payload to .gpt/inbox file
         id: write
-        env:
-          PAYLOAD: ${{ env.PAYLOAD }}
         run: |
           set -euo pipefail
           ts=$(date +%s)
           file=".gpt/inbox/${ts}.txt"
           mkdir -p .gpt/inbox
-          printf '%s\n' "$PAYLOAD" > "$file"
+          echo "${{ github.event.inputs.payload }}" > "$file"
           echo "Wrote payload to $file"
           echo "TIMESTAMP=$ts" >> "$GITHUB_OUTPUT"
-
+          
       - name: Upload intake artifact
         uses: actions/upload-artifact@v4
         with:
