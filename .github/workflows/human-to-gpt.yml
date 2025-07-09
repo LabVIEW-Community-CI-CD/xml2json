@@ -108,11 +108,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          body="Payload timestamp: $TS"
           if [ -n "${PR_URL:-}" ]; then
-            body="$body
+            body=$(cat <<EOF
+          Payload timestamp: $TS
 
-          Related PR: $PR_URL"
+          Related PR: $PR_URL
+          EOF
+          )
+          else
+            body="Payload timestamp: $TS"
           fi
           ISSUE_URL=$(gh issue create \
                        --title "GPT Intake $TS" \
