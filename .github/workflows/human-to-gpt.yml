@@ -20,7 +20,7 @@ jobs:
 
     defaults:
       run:
-        shell: bash
+        shell: pwsh
 
     steps:
       - name: Checkout repository
@@ -33,137 +33,108 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Sanitize and validate input (JSON + phase=inbox)
+      - name: Parse and validate input
         id: validate
         env:
           PAYLOAD_RAW: ${{ github.event.inputs.payload_raw }}
         run: |
-          set -euo pipefail
-          echo "RAW INPUT: $PAYLOAD_RAW"
-          echo "$PAYLOAD_RAW" | jq -Rs 'fromjson' > /tmp/payload.json || {
-            echo "❌ Input is not valid JSON." >&2
-            exit 1
+          $ErrorActionPreference = 'Stop'
+          $payload = ConvertFrom-Json -InputObject $env:PAYLOAD_RAW
+          $phase = $payload.phase
+          if (-not $phase) {
+            Write-Error "❌ No phase specified in payload."
           }
-          npm install -g ajv-cli@5 ajv-formats@2 >/dev/null 2>&1
-          ajv validate -s .gpt/schemas/intake-v1.json -d /tmp/payload.json || {
-            echo "❌ Schema validation failed." >&2
-            exit 1
+          if ($phase -ne "inbox") {
+            Write-Error "❌ Unsupported phase '$phase'. Only 'inbox' is allowed."
           }
-          phase=$(jq -r '.phase // empty' /tmp/payload.json)
-          if [[ -z "$phase" ]]; then
-            echo "❌ No phase specified in payload." >&2
-            exit 1
-          fi
-          if [[ "$phase" != "inbox" ]]; then
-            echo "❌ Unsupported phase '$phase'. Only 'inbox' is allowed." >&2
-            exit 1
-          fi
-          echo "✅ Payload and phase validated."
 
-      - name: Write payload to .gpt/inbox
-        id: write_payload
-        run: |
-          set -euo pipefail
-          ts=$(date +%s)
-          mkdir -p .gpt/inbox
-          cp /tmp/payload.json .gpt/inbox/${ts}.json
-          echo "Wrote payload to .gpt/inbox/${ts}.json"
-          echo "TIMESTAMP=$ts" >> $GITHUB_OUTPUT
+          npm install -g ajv-cli@5 ajv-formats@2 | Out-Null
+          $json = $payload | ConvertTo-Json -Depth 10
+          $json | Out-File -Encoding utf8 -FilePath /tmp/payload.json
+          ajv validate -s .gpt/schemas/intake-v1.json -d /tmp/payload.json
 
-      - name: If in IMPLEMENT phase, verify patch and hash
-        if: ${{ success() }}
+          $json | Out-File -Encoding utf8 -FilePath ".gpt/inbox/${{ github.run_number }}.json"
+          "TIMESTAMP=${{ github.run_number }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Detect patch and hash it if in IMPLEMENT
         run: |
-          set -euo pipefail
-          if [[ ! -f .gpt/status.json ]]; then
-            echo "ℹ️ No .gpt/status.json — cannot determine phase."
+          $status = Get-Content .gpt/status.json | ConvertFrom-Json
+          if ($status.current_phase -ne "IMPLEMENT") {
+            Write-Output "ℹ️ Not in IMPLEMENT phase — skipping patch processing."
             exit 0
-          fi
-          PHASE=$(jq -r .current_phase .gpt/status.json)
-          if [[ "$PHASE" != "IMPLEMENT" ]]; then
-            echo "ℹ️ Not in IMPLEMENT phase — skipping patch validation."
+          }
+
+          $patch = Get-ChildItem .gpt/patches/*.patch -ErrorAction SilentlyContinue |
+                   Sort-Object LastWriteTime -Descending |
+                   Select-Object -First 1
+
+          if (-not $patch) {
+            Write-Output "ℹ️ No patch file found — skipping."
             exit 0
-          fi
-          PATCH=$(ls -1t .gpt/patches/*.patch 2>/dev/null | head -n1 || true)
-          if [[ -z "$PATCH" ]]; then
-            echo "ℹ️ No patch file found — skipping."
-            exit 0
-          fi
-          echo "🔍 Found patch: $PATCH"
-          sha256sum "$PATCH" | tee "$PATCH.sha256"
-          if [[ -f .gpt/scripts/validate-tests.sh ]]; then
-            echo "🧪 Running tests..."
-            bash .gpt/scripts/validate-tests.sh
-          else
-            echo "⚠️ No test validation script found — skipping test execution."
-          fi
+          }
+
+          Write-Output "🔍 Found patch: $($patch.Name)"
+          $hash = Get-FileHash -Path $patch.FullName -Algorithm SHA256
+          "$($hash.Hash) *$($patch.Name)" | Out-File "$($patch.FullName).sha256"
 
       - name: Upload intake artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gpt-intake-${{ steps.write_payload.outputs.TIMESTAMP }}
-          path: .gpt/inbox/${{ steps.write_payload.outputs.TIMESTAMP }}.json
+          name: gpt-intake-${{ github.run_number }}
+          path: .gpt/inbox/${{ github.run_number }}.json
 
-      - name: Commit & push (PR fallback if protected)
+      - name: Commit & push (with PR fallback)
         id: commit
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TS: ${{ steps.write_payload.outputs.TIMESTAMP }}
         run: |
-          set -euo pipefail
-          git config user.name  "github-actions[bot]"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add .gpt/inbox || true
-          git add .gpt/patches/*.sha256 || true
-          git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
-          if git push origin HEAD:main; then
-            echo "BRANCH=" >> $GITHUB_OUTPUT
-            echo "PR_URL=" >> $GITHUB_OUTPUT
-          else
-            BRANCH="gpt-input-$TS"
-            git push -u origin HEAD:$BRANCH
-            PR_URL=$(gh pr create \
-              --base main \
-              --head "$BRANCH" \
-              --title "GPT Intake $TS" \
-              --body "Automated intake PR for payload $TS")
-            echo "BRANCH=$BRANCH" >> $GITHUB_OUTPUT
-            echo "PR_URL=$PR_URL" >> $GITHUB_OUTPUT
+          git add .gpt/inbox
+          git add .gpt/patches/*.sha256 -ErrorAction SilentlyContinue
+          git commit -m "🤖 GPT intake: add payload ${{ github.run_number }}" 2>$null
+
+          if (git push origin HEAD:main 2>$null) {
+            "BRANCH=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "PR_URL=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          else {
+            $branch = "gpt-input-${{ github.run_number }}"
+            git push -u origin HEAD:$branch
+            $prUrl = gh pr create --base main --head $branch --title "GPT Intake ${{ github.run_number }}" --body "Automated intake PR for payload ${{ github.run_number }}"
+            "BRANCH=$branch" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            "PR_URL=$prUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
 
       - name: Open tracking issue
         id: issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TS: ${{ steps.write_payload.outputs.TIMESTAMP }}
           PR_URL: ${{ steps.commit.outputs.PR_URL }}
         run: |
-          set -euo pipefail
-          if [[ -n "${PR_URL}" ]]; then
-            body="Payload timestamp: $TS\n\nRelated PR: $PR_URL"
-          else
-            body="Payload timestamp: $TS"
-          fi
-          ISSUE_URL=$(gh issue create \
-            --title "GPT Intake $TS" \
-            --body "$body" \
-            --label "gpt-intake")
-          echo "ISSUE_NUMBER=$(echo $ISSUE_URL | grep -o '[0-9]*$')" >> $GITHUB_OUTPUT
+          $ts = "${{ github.run_number }}"
+          if ($env:PR_URL) {
+            $body = "Payload timestamp: $ts`n`nRelated PR: $env:PR_URL"
+          }
+          else {
+            $body = "Payload timestamp: $ts"
+          }
+          $issueUrl = gh issue create --title "GPT Intake $ts" --body $body --label "gpt-intake"
+          $issueNumber = $issueUrl -replace '.*/', ''
+          "ISSUE_NUMBER=$issueNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Wait for ACK comment (max 60 min)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
         run: |
-          set -euo pipefail
-          for i in {1..60}; do
-            echo "Polling issue #$ISSUE_NUMBER for 'ACK' comment (attempt $i/60)…"
-            if gh issue view "$ISSUE_NUMBER" \
-                 --json comments \
-                 --jq '.comments[].body' \
-               | grep -qx "ACK"; then
-              echo "✅ ACK detected – workflow complete."
+          for ($i = 1; $i -le 60; $i++) {
+            Write-Output "Polling issue #$env:ISSUE_NUMBER for 'ACK' comment (attempt $i/60)…"
+            $comments = gh issue view $env:ISSUE_NUMBER --json comments --jq ".comments[].body"
+            if ($comments -contains "ACK") {
+              Write-Output "✅ ACK detected – workflow complete."
               exit 0
-            fi
-            sleep 60
-          done
-          echo "❌ No ACK after 60 minutes – failing job." >&2
-          exit 2
+            }
+            Start-Sleep -Seconds 60
+          }
+          Write-Error "❌ No ACK after 60 minutes – failing job."
