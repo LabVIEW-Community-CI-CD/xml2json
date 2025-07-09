@@ -1,101 +1,130 @@
-name: Human-to-GPT Interface
+name: Human ↔ GPT Intake
+
 on:
   workflow_dispatch:
     inputs:
-      json_payload:
-        description: 'JSON payload to process'
+      payload:
+        description: "Raw JSON describing the message"
         required: true
-
-permissions:
-  contents: write
-  issues: write
-  pull-requests: write
+        type: string
 
 jobs:
-  process:
+  intake:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 90          # Global safety net
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    #-------------------------------------------------
+    - name: Checkout repository
+      uses: actions/checkout@v4
 
-      # GitHub CLI is pre-installed on ubuntu-latest runners; no manual installation needed
+    #-------------------------------------------------
+    - name: Validate input (JSON + phase=inbox)
+      id: validate
+      env:
+        PAYLOAD: ${{ github.event.inputs.payload }}
+      run: |
+        set -euo pipefail
+        # 1. Is it JSON?
+        if ! echo "$PAYLOAD" | jq -e . >/dev/null; then
+          echo "❌ Input is not valid JSON." >&2
+          exit 1
+        fi
+        # 2. Does it contain phase == inbox?
+        phase=$(echo "$PAYLOAD" | jq -r '.phase // empty')
+        if [ -z "$phase" ]; then
+          echo "❌ No phase specified in payload." >&2
+          exit 1
+        fi
+        if [ "$phase" != "inbox" ]; then
+          echo "❌ Unsupported phase ‘$phase’. Only ‘inbox’ is allowed." >&2
+          exit 1
+        fi
+        echo "✅ Payload and phase validated."
 
-      - name: Configure Git
-        run: |
-          git config user.name "GitHub Actions"
-          git config user.email "actions@github.com"
+    #-------------------------------------------------
+    - name: Write payload to .gpt/inbox file
+      id: write
+      env:
+        PAYLOAD: ${{ github.event.inputs.payload }}
+      run: |
+        set -euo pipefail
+        ts=$(date +%s)
+        file=".gpt/inbox/${ts}.txt"
+        mkdir -p .gpt/inbox
+        printf '%s\n' "$PAYLOAD" > "$file"     # No leading indentation
+        echo "Wrote payload to $file"
+        echo "TIMESTAMP=$ts" >> "$GITHUB_OUTPUT"
 
-      - name: Validate input phase
-        run: |
-          payload='${{ github.event.inputs.json_payload }}'
-          # Extract "phase" from JSON (requires jq)
-          phase=$(echo "$payload" | jq -r '.phase' || echo "")
-          if [ -z "$phase" ] || [ "$phase" = "null" ]; then
-            echo "Error: No phase specified in JSON payload." >&2
-            exit 1
+    #-------------------------------------------------
+    - name: Commit & push (PR fallback if protected)
+      id: commit
+      env:
+        TS: ${{ steps.write.outputs.TIMESTAMP }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        git config user.name  "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git add .gpt/inbox || true
+        git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
+        if git push origin HEAD:main; then
+          echo "✅ Changes pushed to main."
+          echo "BRANCH="   >> "$GITHUB_OUTPUT"
+          echo "PR_URL="   >> "$GITHUB_OUTPUT"
+        else
+          echo "ℹ️  Direct push blocked – opening PR."
+          BRANCH="gpt-input-$TS"
+          git push -u origin HEAD:$BRANCH
+          PR_URL=$(gh pr create \
+                     --base main \
+                     --head "$BRANCH" \
+                     --title "GPT Intake $TS" \
+                     --body  "Automated intake PR for payload $TS")
+          echo "✅ PR opened: $PR_URL"
+          echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
+          echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
+        fi
+
+    #-------------------------------------------------
+    - name: Open tracking issue
+      id: issue
+      env:
+        TS:      ${{ steps.write.outputs.TIMESTAMP }}
+        PR_URL:  ${{ steps.commit.outputs.PR_URL }}
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        set -euo pipefail
+        body="Payload timestamp: $TS"
+        if [ -n "${PR_URL:-}" ]; then
+          body="$body\n\nRelated PR: $PR_URL"
+        fi
+        ISSUE_URL=$(gh issue create \
+                     --title "GPT Intake $TS" \
+                     --body  "$body" \
+                     --label "gpt-intake")
+        echo "✅ Issue opened: $ISSUE_URL"
+        # Extract plain number for polling step
+        ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
+        echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
+
+    #-------------------------------------------------
+    - name: Wait for ACK comment (max 60 min)
+      env:
+        GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+        ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
+      run: |
+        set -euo pipefail
+        max_checks=60          # 60 × 60 s = 1 h
+        for ((i=1;i<=max_checks;i++)); do
+          echo "Polling issue #$ISSUE_NUMBER for 'ACK' comment (attempt $i/$max_checks)…"
+          if gh issue view "$ISSUE_NUMBER" \
+               --json comments \
+               --jq '.comments[].body' | grep -q '^ACK$'; then
+            echo "✅ ACK detected – workflow complete."
+            exit 0
           fi
-          if [ "$phase" != "inbox" ]; then
-            echo "Error: Unsupported phase '$phase'. Only 'inbox' is allowed." >&2
-            exit 1
-          fi
-
-      - name: Write payload file
-        run: |
-          timestamp=$(date +%s)
-          payload_file=".gpt/inbox/${timestamp}.txt"
-          mkdir -p "$(dirname "$payload_file")"
-          cat <<'EOF' > "$payload_file"
-          ${{ github.event.inputs.json_payload }}
-          EOF
-          echo "Wrote payload to $payload_file"
-          # Export TIMESTAMP for later steps
-          echo "TIMESTAMP=$timestamp" >> $GITHUB_ENV
-
-      - name: Commit and push changes
-        run: |
-          # Add and commit the new file
-          git add "$payload_file"
-          git commit -m "Add input payload at $TIMESTAMP"
-          # Attempt to push directly to main
-          if git push origin HEAD:main; then
-            echo "Changes pushed to main."
-          else
-            echo "Direct push to main failed. Creating a new branch and PR."
-            pr_branch="gpt-input-${TIMESTAMP}"
-            git switch -c "$pr_branch"
-            git push origin "$pr_branch"
-            # Create a PR into main
-            pr_url=$(gh pr create --base main --head "$pr_branch" --title "New GPT input ${TIMESTAMP}" --body "Automated input submission")
-            echo "Opened PR at $pr_url"
-            # Optionally, mark PR URL for use in issue
-            echo "PR_URL=$pr_url" >> $GITHUB_ENV
-          fi
-
-      - name: Create tracking issue
-        run: |
-          title="New input received at $TIMESTAMP"
-          body="A new input has been submitted via the Human-to-GPT interface."
-          body+=$'\n\nTimestamp: '"$TIMESTAMP"
-          if [ -n "${PR_URL:-}" ]; then
-            body+=$'\nPull Request: '"$PR_URL"
-          fi
-          # Create issue and capture its number
-          issue_number=$(gh issue create --title "$title" --body "$body" --json number --jq '.number')
-          echo "Tracking issue #$issue_number created."
-          # Save issue number for polling
-          echo "ISSUE_NUMBER=$issue_number" >> $GITHUB_ENV
-
-      - name: Wait for ACK
-        run: |
-          echo "Polling issue #$ISSUE_NUMBER for an 'ACK' comment..."
-          while true; do
-            sleep 60
-            comments=$(gh issue view $ISSUE_NUMBER --json comments --jq '.comments[].body')
-            if echo "$comments" | grep -q -w "ACK"; then
-              echo "ACK comment detected. Proceeding."
-              break
-            fi
-            echo "No ACK yet. Checking again in 60 seconds..."
-          done
+          sleep 60
+        done
+        echo "❌ No ACK after $((max_checks)) minutes – failing job." >&2
+        exit 2
