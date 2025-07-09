@@ -36,7 +36,8 @@ jobs:
           if ! command -v ajv >/dev/null; then
             npm install -g ajv-cli@5 ajv-formats >/dev/null 2>&1
           fi
-          echo "$PAYLOAD" | ajv validate -c ajv-formats -s .gpt/schemas/intake-v1.json -d @- || {
+          # Use stdin ('-d -') rather than '@-'
+          echo "$PAYLOAD" | ajv validate -c ajv-formats -s .gpt/schemas/intake-v1.json -d - || {
             echo "❌ Schema validation failed." >&2
             exit 1
           }
@@ -81,6 +82,12 @@ jobs:
           printf '%s\n' "$PAYLOAD" > "$file"
           echo "Wrote payload to $file"
           echo "TIMESTAMP=$ts" >> "$GITHUB_OUTPUT"
+
+      - name: Upload intake artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-intake-${{ steps.write.outputs.TIMESTAMP }}
+          path: .gpt/inbox/${{ steps.write.outputs.TIMESTAMP }}.txt
 
       - name: Commit & push (PR fallback if protected)
         id: commit
