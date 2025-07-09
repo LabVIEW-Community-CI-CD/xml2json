@@ -3,8 +3,8 @@ name: Human ↔ GPT Intake
 on:
   workflow_dispatch:
     inputs:
-      payload:
-        description: "Raw JSON describing the message (use CLI -f payload='...')"
+      payload_raw:
+        description: "Loosely-formatted JSON string (quotes optional, CLI-safe)"
         required: true
         type: string
 
@@ -21,18 +21,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Validate input (JSON + phase=inbox)
+      - name: Sanitize and validate input (JSON + phase=inbox)
         id: validate
         env:
-          PAYLOAD: ${{ github.event.inputs.payload }}
+          PAYLOAD_RAW: ${{ github.event.inputs.payload_raw }}
         run: |
           set -euo pipefail
-          echo "RAW PAYLOAD: $PAYLOAD"
-          echo "$PAYLOAD" > /tmp/payload.json
-          if ! jq -e . /tmp/payload.json >/dev/null; then
+          echo "RAW INPUT: $PAYLOAD_RAW"
+          echo "$PAYLOAD_RAW" | jq -Rs 'fromjson' > /tmp/payload.json || {
             echo "❌ Input is not valid JSON." >&2
             exit 1
-          fi
+          }
+
           if ! command -v ajv >/dev/null; then
             npm install -g ajv-cli@5 ajv-formats >/dev/null 2>&1
           fi
@@ -42,6 +42,7 @@ jobs:
               echo "❌ Schema validation failed." >&2
               exit 1
             }
+
           phase=$(jq -r '.phase // empty' /tmp/payload.json)
           if [ -z "$phase" ]; then
             echo "❌ No phase specified in payload." >&2
@@ -60,7 +61,7 @@ jobs:
           ts=$(date +%s)
           file=".gpt/inbox/${ts}.txt"
           mkdir -p .gpt/inbox
-          echo "${{ github.event.inputs.payload }}" > "$file"
+          cp /tmp/payload.json "$file"
           echo "Wrote payload to $file"
           echo "TIMESTAMP=$ts" >> "$GITHUB_OUTPUT"
 
