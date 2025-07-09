@@ -56,19 +56,6 @@ jobs:
           fi
           echo "✅ Payload and phase validated."
 
-      - name: Redact PII (gitleaks default)
-        env:
-          PAYLOAD: ${{ env.PAYLOAD }}
-        run: |
-          set -euo pipefail
-          curl -sSL https://github.com/zricethezav/gitleaks/releases/latest/download/gitleaks-linux-amd64.tar.gz | tar xz
-          mv gitleaks-linux-amd64 /usr/local/bin/gitleaks
-          echo "$PAYLOAD" > /tmp/payload.json
-          gitleaks redact --source=/tmp/payload.json --in-place
-          echo 'PAYLOAD<<EOF' >> $GITHUB_ENV
-          cat /tmp/payload.json >> $GITHUB_ENV
-          echo 'EOF' >> $GITHUB_ENV
-
       - name: Write payload to .gpt/inbox file
         id: write
         env:
