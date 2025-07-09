@@ -16,3 +16,18 @@ All GPT agents must:
 
 > You are now entering the IMPLEMENT phase of `realrun-002`, using the validated SRS at `docs/SRS.md`. Prior transitions are logged in `.gpt/inbox/`.
 
+### DELIVER Phase Finalization Requirement
+
+All CoordinatorGPT agents must complete the DELIVER phase with one of the following:
+
+- Emit the final confirmation payload themselves:
+
+```json
+{
+  "phase": "inbox",
+  "conversation_id": "<workflow_id>",
+  "timestamp": "<ISO_8601_UTC>",
+  "role": "user",
+  "content": "DELIVER artifacts have been applied. Patch merged, release tagged <version>."
+}
+```
