@@ -8,10 +8,6 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write        # allow pushes and branch/PR creation
-  issues:   write        # allow creating issues via `gh issue create`
-
 jobs:
   intake:
     runs-on: ubuntu-latest
@@ -24,17 +20,15 @@ jobs:
 
     #-------------------------------------------------
     - name: Validate input (JSON + phase=inbox)
-      id: validate
+      id: validate-json
       env:
         PAYLOAD: ${{ github.event.inputs.payload }}
       run: |
         set -euo pipefail
-        # 1. Is it valid JSON?
         if ! echo "$PAYLOAD" | jq -e . >/dev/null; then
           echo "❌ Input is not valid JSON." >&2
           exit 1
         fi
-        # 2. Does it contain phase == inbox?
         phase=$(echo "$PAYLOAD" | jq -r '.phase // empty')
         if [ -z "$phase" ]; then
           echo "❌ No phase specified in payload." >&2
@@ -47,6 +41,25 @@ jobs:
         echo "✅ Payload and phase validated."
 
     #-------------------------------------------------
+    - name: Setup Node.js for schema validation
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install AJV CLI
+      run: npm install -g ajv-cli
+
+    - name: Validate against JSON Schema
+      id: validate-schema
+      env:
+        PAYLOAD: ${{ github.event.inputs.payload }}
+      run: |
+        set -euo pipefail
+        echo "$PAYLOAD" > payload.json
+        ajv validate -s .gpt/schemas/intake-v1.json -d payload.json
+        echo "✅ Schema validation passed."
+
+    #-------------------------------------------------
     - name: Write payload to .gpt/inbox file
       id: write
       env:
@@ -56,53 +69,43 @@ jobs:
         ts=$(date +%s)
         file=".gpt/inbox/${ts}.txt"
         mkdir -p .gpt/inbox
-        printf '%s\n' "$PAYLOAD" > "$file"     # No indentation
+        printf '%s\n' "$PAYLOAD" > "$file"
         echo "Wrote payload to $file"
         echo "TIMESTAMP=$ts" >> "$GITHUB_OUTPUT"
+
+    #-------------------------------------------------
+    - name: Upload payload as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: gpt-intake-${{ steps.write.outputs.TIMESTAMP }}
+        path: .gpt/inbox/${{ steps.write.outputs.TIMESTAMP }}.txt
 
     #-------------------------------------------------
     - name: Commit & push (PR fallback if protected)
       id: commit
       env:
-        TS:       ${{ steps.write.outputs.TIMESTAMP }}
+        TS: ${{ steps.write.outputs.TIMESTAMP }}
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         set -euo pipefail
-
         git config user.name  "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
         git add .gpt/inbox || true
         git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
-
-        # Try direct push
         if git push origin HEAD:main; then
           echo "✅ Changes pushed to main."
           echo "BRANCH="   >> "$GITHUB_OUTPUT"
           echo "PR_URL="   >> "$GITHUB_OUTPUT"
         else
-          echo "ℹ️  Direct push blocked (403). Attempting PR fallback…"
+          echo "ℹ️  Direct push blocked – opening PR."
           BRANCH="gpt-input-$TS"
-
-          # Try branch push
-          if git push -u origin HEAD:$BRANCH; then
-            echo "✅ Branch pushed to $BRANCH."
-            # Attempt to open PR
-            if PR_URL=$(gh pr create \
-                         --base main \
-                         --head "$BRANCH" \
-                         --title "GPT Intake $TS" \
-                         --body  "Automated intake PR for payload $TS"); then
-              echo "✅ PR opened: $PR_URL"
-            else
-              echo "❌ PR creation failed; proceeding without a PR." >&2
-              PR_URL=""
-            fi
-          else
-            echo "❌ Branch push to $BRANCH failed (permissions). Skipping PR." >&2
-            PR_URL=""
-          fi
-
-          # Always expose outputs
+          git push -u origin HEAD:$BRANCH
+          PR_URL=$(gh pr create \
+                     --base main \
+                     --head "$BRANCH" \
+                     --title "GPT Intake $TS" \
+                     --body  "Automated intake PR for payload $TS")
+          echo "✅ PR opened: $PR_URL"
           echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
         fi
@@ -111,8 +114,8 @@ jobs:
     - name: Open tracking issue
       id: issue
       env:
-        TS:       ${{ steps.write.outputs.TIMESTAMP }}
-        PR_URL:   ${{ steps.commit.outputs.PR_URL }}
+        TS:      ${{ steps.write.outputs.TIMESTAMP }}
+        PR_URL:  ${{ steps.commit.outputs.PR_URL }}
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         set -euo pipefail
@@ -120,35 +123,25 @@ jobs:
         if [ -n "${PR_URL:-}" ]; then
           body="$body\n\nRelated PR: $PR_URL"
         fi
-
-        # Attempt to create the issue
-        if ISSUE_URL=$(gh issue create \
-                         --title "GPT Intake $TS" \
-                         --body  "$body" \
-                         --label "gpt-intake"); then
-          echo "✅ Issue opened: $ISSUE_URL"
-          ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
-        else
-          echo "❌ Issue creation failed; proceeding without issue." >&2
-          ISSUE_URL=""
-          ISSUE_NUMBER=""
-        fi
-
-        # Expose outputs (even if empty)
-        echo "ISSUE_URL=$ISSUE_URL"     >> "$GITHUB_OUTPUT"
+        ISSUE_URL=$(gh issue create \
+                     --title "GPT Intake $TS" \
+                     --body  "$body" \
+                     --label "gpt-intake")
+        echo "✅ Issue opened: $ISSUE_URL"
+        ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
         echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
     #-------------------------------------------------
-    - name: Wait for ACK comment (max 60 min)
+    - name: Wait for ACK comment (max 60 min)
       env:
         GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
         ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
       run: |
         set -euo pipefail
-        max_checks=60          # 60 × 60 s = 1 h
+        max_checks=60
         for ((i=1;i<=max_checks;i++)); do
           echo "Polling issue #$ISSUE_NUMBER for 'ACK' comment (attempt $i/$max_checks)…"
-          if [ -n "$ISSUE_NUMBER" ] && gh issue view "$ISSUE_NUMBER" \
+          if gh issue view "$ISSUE_NUMBER" \
                --json comments \
                --jq '.comments[].body' | grep -q '^ACK$'; then
             echo "✅ ACK detected – workflow complete."
