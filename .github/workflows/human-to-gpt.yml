@@ -1,123 +1,101 @@
-name: Human‑to‑GPT Interface
+name: Human-to-GPT Interface
 on:
   workflow_dispatch:
     inputs:
       json_payload:
-        description: 'JSON string containing at least {"phase": "...", ...}'
+        description: 'JSON payload to process'
         required: true
 
-env:
-  TZ: UTC                     # ensure consistent timestamps
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
-  drop‑payload:
+  process:
     runs-on: ubuntu-latest
-
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Check out main
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          persist-credentials: true
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Install GitHub CLI
-        uses: cli/gh-extension-precompile@v2
+      # GitHub CLI is pre-installed on ubuntu-latest runners; no manual installation needed
 
-      - name: Validate input JSON & extract phase
-        id: validate
+      - name: Configure Git
         run: |
-          echo "${{ github.event.inputs.json_payload }}" | jq -e '.phase' >/dev/null 2>&1 \
-            || { echo "::error::Input JSON must contain a \"phase\" field"; exit 1; }
-          phase=$(echo '${{ github.event.inputs.json_payload }}' | jq -r '.phase')
-          echo "phase=$phase" >> "$GITHUB_OUTPUT"
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Validate input phase
+        run: |
+          payload='${{ github.event.inputs.json_payload }}'
+          # Extract "phase" from JSON (requires jq)
+          phase=$(echo "$payload" | jq -r '.phase' || echo "")
+          if [ -z "$phase" ] || [ "$phase" = "null" ]; then
+            echo "Error: No phase specified in JSON payload." >&2
+            exit 1
+          fi
+          if [ "$phase" != "inbox" ]; then
+            echo "Error: Unsupported phase '$phase'. Only 'inbox' is allowed." >&2
+            exit 1
+          fi
 
       - name: Write payload file
-        id: write
         run: |
-          ts=$(date -u +"%Y%m%dT%H%M%SZ")
-          path=".gpt/inbox/${ts}.txt"
-          mkdir -p "$(dirname "$path")"
-
-          cat <<EOF >"$path"
-          {
-            "timestamp": "$ts",
-            "actor": "${{ github.actor }}",
-            "workflow_run_id": "${{ github.run_id }}",
-            "phase": "${{ steps.validate.outputs.phase }}",
-            "payload": ${{ github.event.inputs.json_payload }}
-          }
+          timestamp=$(date +%s)
+          payload_file=".gpt/inbox/${timestamp}.txt"
+          mkdir -p "$(dirname "$payload_file")"
+          cat <<'EOF' > "$payload_file"
+          ${{ github.event.inputs.json_payload }}
           EOF
+          echo "Wrote payload to $payload_file"
+          # Export TIMESTAMP for later steps
+          echo "TIMESTAMP=$timestamp" >> $GITHUB_ENV
 
-          echo "file_path=$path" >>"$GITHUB_OUTPUT"
-          echo "::notice::Payload written to $path"
-
-      - name: Commit and push to main
-        id: push‑main
-        continue-on-error: true
+      - name: Commit and push changes
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add "${{ steps.write.outputs.file_path }}"
-          git commit -m "chore: drop human input
-
-${{ github.event.inputs.json_payload }}"
-          git push origin HEAD:main
-
-      - name: Fallback – create branch & PR if push blocked
-        if: steps.push‑main.outcome == 'failure'
-        id: pr
-        run: |
-          ts=$(date -u +"%Y%m%dT%H%M%SZ")
-          branch="gpt-input-${ts}"
-          git checkout -b "$branch"
-          git push -u origin "$branch"
-
-          pr_json=$(gh pr create \
-            --title "Human input $ts" \
-            --body "Auto‑generated payload file ready for review." \
-            --head "$branch" \
-            --base main \
-            --json number,url)
-
-          number=$(echo "$pr_json" | jq -r '.number')
-          url=$(echo "$pr_json"    | jq -r '.url')
-          echo "::notice::Opened PR #$number ($url)"
-          echo "pr_number=$number" >>"$GITHUB_OUTPUT"
-
-      - name: Open tracking issue
-        id: issue
-        run: |
-          ts=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          title="GPT payload $ts"
-          body="A new payload file was committed.\n\n"
-          if [ "${{ steps.push‑main.outcome }}" = "failure" ]; then
-            body+="Payload lives in PR #${{ steps.pr.outputs.pr_number }}.\n"
+          # Add and commit the new file
+          git add "$payload_file"
+          git commit -m "Add input payload at $TIMESTAMP"
+          # Attempt to push directly to main
+          if git push origin HEAD:main; then
+            echo "Changes pushed to main."
+          else
+            echo "Direct push to main failed. Creating a new branch and PR."
+            pr_branch="gpt-input-${TIMESTAMP}"
+            git switch -c "$pr_branch"
+            git push origin "$pr_branch"
+            # Create a PR into main
+            pr_url=$(gh pr create --base main --head "$pr_branch" --title "New GPT input ${TIMESTAMP}" --body "Automated input submission")
+            echo "Opened PR at $pr_url"
+            # Optionally, mark PR URL for use in issue
+            echo "PR_URL=$pr_url" >> $GITHUB_ENV
           fi
-          body+="Commit: ${{ github.sha }}\n\nPlease comment **ACK** when processed."
 
-          issue_json=$(gh issue create --title "$title" --body "$body" --json number,url)
-          echo "$issue_json" | jq .
-          num=$(echo "$issue_json" | jq -r '.number')
-          url=$(echo "$issue_json" | jq -r '.url')
-          echo "::notice::Tracking issue #$num opened ($url)"
-          echo "issue_number=$num" >>"$GITHUB_OUTPUT"
+      - name: Create tracking issue
+        run: |
+          title="New input received at $TIMESTAMP"
+          body="A new input has been submitted via the Human-to-GPT interface."
+          body+=$'\n\nTimestamp: '"$TIMESTAMP"
+          if [ -n "${PR_URL:-}" ]; then
+            body+=$'\nPull Request: '"$PR_URL"
+          fi
+          # Create issue and capture its number
+          issue_number=$(gh issue create --title "$title" --body "$body" --json number --jq '.number')
+          echo "Tracking issue #$issue_number created."
+          # Save issue number for polling
+          echo "ISSUE_NUMBER=$issue_number" >> $GITHUB_ENV
 
       - name: Wait for ACK
-        id: wait
-        env:
-          ISSUE: ${{ steps.issue.outputs.issue_number }}
         run: |
-          echo "::notice::Waiting indefinitely for comment 'ACK' on issue #$ISSUE"
+          echo "Polling issue #$ISSUE_NUMBER for an 'ACK' comment..."
           while true; do
-            if gh issue view "$ISSUE" --comments --json comments \
-                 | jq -e '.comments[] | select(.body == "ACK")' >/dev/null; then
-              echo "::notice::ACK received."
+            sleep 60
+            comments=$(gh issue view $ISSUE_NUMBER --json comments --jq '.comments[].body')
+            if echo "$comments" | grep -q -w "ACK"; then
+              echo "ACK comment detected. Proceeding."
               break
             fi
-            sleep 60
+            echo "No ACK yet. Checking again in 60 seconds..."
           done
-
-      - name: Success notice
-        run: echo "::notice::Human‑to‑GPT round complete – workflow finished."
