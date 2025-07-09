@@ -11,7 +11,7 @@ on:
 
 permissions:
   contents: write
-  issues:   write
+  issues: write
 
 jobs:
   intake:
@@ -37,6 +37,7 @@ jobs:
           if ! command -v ajv >/dev/null; then
             npm install -g ajv-cli@5 ajv-formats >/dev/null 2>&1
           fi
+
           ajv validate -c ajv-formats \
             -s .gpt/schemas/intake-v1.json \
             -d /tmp/payload.json || {
@@ -118,17 +119,17 @@ jobs:
           git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
           if git push origin HEAD:main; then
             echo "✅ Changes pushed to main."
-            echo "BRANCH="   >> "$GITHUB_OUTPUT"
-            echo "PR_URL="   >> "$GITHUB_OUTPUT"
+            echo "BRANCH=" >> "$GITHUB_OUTPUT"
+            echo "PR_URL=" >> "$GITHUB_OUTPUT"
           else
             echo "ℹ️  Direct push blocked – opening PR."
             BRANCH="gpt-input-$TS"
             git push -u origin HEAD:$BRANCH
             PR_URL=$(gh pr create \
-                       --base main \
-                       --head "$BRANCH" \
-                       --title "GPT Intake $TS" \
-                       --body  "Automated intake PR for payload $TS")
+              --base main \
+              --head "$BRANCH" \
+              --title "GPT Intake $TS" \
+              --body "Automated intake PR for payload $TS")
             echo "✅ PR opened: $PR_URL"
             echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
             echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
@@ -136,8 +137,8 @@ jobs:
       - name: Open tracking issue
         id: issue
         env:
-          TS:      ${{ steps.write.outputs.TIMESTAMP }}
-          PR_URL:  ${{ steps.commit.outputs.PR_URL }}
+          TS: ${{ steps.write.outputs.TIMESTAMP }}
+          PR_URL: ${{ steps.commit.outputs.PR_URL }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -152,16 +153,16 @@ EOF
             body="Payload timestamp: $TS"
           fi
           ISSUE_URL=$(gh issue create \
-                       --title "GPT Intake $TS" \
-                       --body  "$body" \
-                       --label "gpt-intake")
+            --title "GPT Intake $TS" \
+            --body "$body" \
+            --label "gpt-intake")
           echo "✅ Issue opened: $ISSUE_URL"
           ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
           echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Wait for ACK comment (max 60 min)
         env:
-          GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
         run: |
           set -euo pipefail
@@ -169,8 +170,8 @@ EOF
           for ((i=1;i<=max_checks;i++)); do
             echo "Polling issue #$ISSUE_NUMBER for 'ACK' comment (attempt $i/$max_checks)…"
             if [ -n "$ISSUE_NUMBER" ] && gh issue view "$ISSUE_NUMBER" \
-                 --json comments \
-                 --jq '.comments[].body' | grep -q '^ACK$'; then
+              --json comments \
+              --jq '.comments[].body' | grep -q '^ACK$'; then
               echo "✅ ACK detected – workflow complete."
               exit 0
             fi
