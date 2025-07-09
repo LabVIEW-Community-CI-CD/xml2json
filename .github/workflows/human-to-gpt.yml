@@ -49,11 +49,13 @@ jobs:
           }
 
           npm install -g ajv-cli@5 ajv-formats@2 | Out-Null
-          $json = $payload | ConvertTo-Json -Depth 10
-          $json | Out-File -Encoding utf8 -FilePath "$env:RUNNER_TEMP\payload.json"
-          ajv validate -s .gpt/schemas/intake-v1.json -d "$env:RUNNER_TEMP\payload.json"
+          $tempPath = Join-Path $env:RUNNER_TEMP "payload.json"
+          $payload | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 -FilePath $tempPath
 
-          $json | Out-File -Encoding utf8 -FilePath ".gpt/inbox/${{ github.run_number }}.json"
+          ajv validate -c ajv-formats -s .gpt/schemas/intake-v1.json -d $tempPath
+
+          $inboxPath = ".gpt/inbox/${{ github.run_number }}.json"
+          Copy-Item -Path $tempPath -Destination $inboxPath
           "TIMESTAMP=${{ github.run_number }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Detect patch and hash it if in IMPLEMENT
