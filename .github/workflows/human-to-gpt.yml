@@ -52,10 +52,27 @@ jobs:
           fi
           echo "✅ Payload and phase validated."
 
+      - name: Redact PII (gitleaks default)
+        env:
+          PAYLOAD: ${{ env.PAYLOAD }}
+        run: |
+          set -euo pipefail
+          # Install gitleaks
+          curl -sSL https://github.com/zricethezav/gitleaks/releases/latest/download/gitleaks-linux-amd64.tar.gz | tar xz
+          mv gitleaks-linux-amd64 /usr/local/bin/gitleaks
+          # Write payload to temp
+          echo "$PAYLOAD" > /tmp/payload.json
+          # Perform redaction
+          gitleaks redact --source=/tmp/payload.json --in-place
+          # Export redacted payload for subsequent steps
+          echo 'PAYLOAD<<EOF' >> $GITHUB_ENV
+          cat /tmp/payload.json >> $GITHUB_ENV
+          echo 'EOF' >> $GITHUB_ENV
+
       - name: Write payload to .gpt/inbox file
         id: write
         env:
-          PAYLOAD: ${{ github.event.inputs.payload }}
+          PAYLOAD: ${{ env.PAYLOAD }}
         run: |
           set -euo pipefail
           ts=$(date +%s)
@@ -114,13 +131,13 @@ jobs:
           ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
           echo "ISSUE_NUMBER=$ISSUE_NUMBER" >> "$GITHUB_OUTPUT"
 
-      - name: Wait for ACK comment (max 60 min)
+      - name: Wait for ACK comment (max 60 min)
         env:
           GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
         run: |
           set -euo pipefail
-          max_checks=60          # 60 × 60 s = 1 h
+          max_checks=60          # 60 × 60 s = 1 h
           for ((i=1;i<=max_checks;i++)); do
             echo "Polling issue #$ISSUE_NUMBER for 'ACK' comment (attempt $i/$max_checks)…"
             if [ -n "$ISSUE_NUMBER" ] && gh issue view "$ISSUE_NUMBER" \
