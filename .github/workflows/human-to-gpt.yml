@@ -96,7 +96,8 @@ jobs:
           git add .gpt/patches/*.sha256 -ErrorAction SilentlyContinue
           git commit -m "🤖 GPT intake: add payload ${{ github.run_number }}" 2>$null
 
-          if (git push origin HEAD:main 2>$null) {
+          git push origin HEAD:main 2>$null
+          if ($LASTEXITCODE -eq 0) {
             "BRANCH=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "PR_URL=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
@@ -107,7 +108,7 @@ jobs:
             "BRANCH=$branch" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
             "PR_URL=$prUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
-
+          
       - name: Open tracking issue
         id: issue
         env:
