@@ -9,13 +9,13 @@ on:
         type: string
 
 permissions:
-  contents: write        # allow pushes and branch/PR creation
-  issues:   write        # allow creating issues via `gh issue create`
+  contents: write
+  issues:   write
 
 jobs:
   intake:
     runs-on: ubuntu-latest
-    timeout-minutes: 90          # Global safety net
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -36,13 +36,16 @@ jobs:
           if ! command -v ajv >/dev/null; then
             npm install -g ajv-cli@5 ajv-formats >/dev/null 2>&1
           fi
-          # Use stdin ('-d -') rather than '@-'
-          echo "$PAYLOAD" | ajv validate -c ajv-formats -s .gpt/schemas/intake-v1.json -d - || {
-            echo "❌ Schema validation failed." >&2
-            exit 1
-          }
+          # Write payload to temp file for AJV
+          echo "$PAYLOAD" > /tmp/payload.json
+          ajv validate -c ajv-formats \
+            -s .gpt/schemas/intake-v1.json \
+            -d /tmp/payload.json || {
+              echo "❌ Schema validation failed." >&2
+              exit 1
+            }
           # 2. Does it contain phase == inbox?
-          phase=$(echo "$PAYLOAD" | jq -r '.phase // empty')
+          phase=$(jq -r '.phase // empty' /tmp/payload.json)
           if [ -z "$phase" ]; then
             echo "❌ No phase specified in payload." >&2
             exit 1
@@ -58,14 +61,10 @@ jobs:
           PAYLOAD: ${{ env.PAYLOAD }}
         run: |
           set -euo pipefail
-          # Install gitleaks
           curl -sSL https://github.com/zricethezav/gitleaks/releases/latest/download/gitleaks-linux-amd64.tar.gz | tar xz
           mv gitleaks-linux-amd64 /usr/local/bin/gitleaks
-          # Write payload to temp
           echo "$PAYLOAD" > /tmp/payload.json
-          # Perform redaction
           gitleaks redact --source=/tmp/payload.json --in-place
-          # Export redacted payload for subsequent steps
           echo 'PAYLOAD<<EOF' >> $GITHUB_ENV
           cat /tmp/payload.json >> $GITHUB_ENV
           echo 'EOF' >> $GITHUB_ENV
@@ -144,7 +143,7 @@ jobs:
           ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
         run: |
           set -euo pipefail
-          max_checks=60          # 60 × 60 s = 1 h
+          max_checks=60
           for ((i=1;i<=max_checks;i++)); do
             echo "Polling issue #$ISSUE_NUMBER for 'ACK' comment (attempt $i/$max_checks)…"
             if [ -n "$ISSUE_NUMBER" ] && gh issue view "$ISSUE_NUMBER" \
