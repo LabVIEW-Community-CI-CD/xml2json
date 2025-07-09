@@ -79,10 +79,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
           git add .gpt/inbox || true
           git commit -m "🤖 GPT intake: add payload $TS" || echo "Nothing to commit."
+
           if git push origin HEAD:main; then
             echo "✅ Changes pushed to main."
             echo "BRANCH="   >> "$GITHUB_OUTPUT"
@@ -99,6 +102,7 @@ jobs:
             echo "✅ PR opened: $PR_URL"
             echo "BRANCH=$BRANCH" >> "$GITHUB_OUTPUT"
             echo "PR_URL=$PR_URL" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Open tracking issue
         id: issue
