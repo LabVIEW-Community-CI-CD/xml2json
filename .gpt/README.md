@@ -31,3 +31,6 @@ All CoordinatorGPT agents must complete the DELIVER phase with one of the follow
   "content": "DELIVER artifacts have been applied. Patch merged, release tagged <version>."
 }
 ```
+Or explicitly instruct the user to submit it through the GitHub Action.
+
+This confirmation is required to mark the delivery as complete and close the state machine.
