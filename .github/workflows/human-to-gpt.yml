@@ -1,0 +1,123 @@
+name: Human‑to‑GPT Interface
+on:
+  workflow_dispatch:
+    inputs:
+      json_payload:
+        description: 'JSON string containing at least {"phase": "...", ...}'
+        required: true
+
+env:
+  TZ: UTC                     # ensure consistent timestamps
+  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  drop‑payload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: true
+
+      - name: Install GitHub CLI
+        uses: cli/gh-extension-precompile@v2
+
+      - name: Validate input JSON & extract phase
+        id: validate
+        run: |
+          echo "${{ github.event.inputs.json_payload }}" | jq -e '.phase' >/dev/null 2>&1 \
+            || { echo "::error::Input JSON must contain a \"phase\" field"; exit 1; }
+          phase=$(echo '${{ github.event.inputs.json_payload }}' | jq -r '.phase')
+          echo "phase=$phase" >> "$GITHUB_OUTPUT"
+
+      - name: Write payload file
+        id: write
+        run: |
+          ts=$(date -u +"%Y%m%dT%H%M%SZ")
+          path=".gpt/inbox/${ts}.txt"
+          mkdir -p "$(dirname "$path")"
+
+          cat <<EOF >"$path"
+          {
+            "timestamp": "$ts",
+            "actor": "${{ github.actor }}",
+            "workflow_run_id": "${{ github.run_id }}",
+            "phase": "${{ steps.validate.outputs.phase }}",
+            "payload": ${{ github.event.inputs.json_payload }}
+          }
+          EOF
+
+          echo "file_path=$path" >>"$GITHUB_OUTPUT"
+          echo "::notice::Payload written to $path"
+
+      - name: Commit and push to main
+        id: push‑main
+        continue-on-error: true
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add "${{ steps.write.outputs.file_path }}"
+          git commit -m "chore: drop human input
+
+${{ github.event.inputs.json_payload }}"
+          git push origin HEAD:main
+
+      - name: Fallback – create branch & PR if push blocked
+        if: steps.push‑main.outcome == 'failure'
+        id: pr
+        run: |
+          ts=$(date -u +"%Y%m%dT%H%M%SZ")
+          branch="gpt-input-${ts}"
+          git checkout -b "$branch"
+          git push -u origin "$branch"
+
+          pr_json=$(gh pr create \
+            --title "Human input $ts" \
+            --body "Auto‑generated payload file ready for review." \
+            --head "$branch" \
+            --base main \
+            --json number,url)
+
+          number=$(echo "$pr_json" | jq -r '.number')
+          url=$(echo "$pr_json"    | jq -r '.url')
+          echo "::notice::Opened PR #$number ($url)"
+          echo "pr_number=$number" >>"$GITHUB_OUTPUT"
+
+      - name: Open tracking issue
+        id: issue
+        run: |
+          ts=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          title="GPT payload $ts"
+          body="A new payload file was committed.\n\n"
+          if [ "${{ steps.push‑main.outcome }}" = "failure" ]; then
+            body+="Payload lives in PR #${{ steps.pr.outputs.pr_number }}.\n"
+          fi
+          body+="Commit: ${{ github.sha }}\n\nPlease comment **ACK** when processed."
+
+          issue_json=$(gh issue create --title "$title" --body "$body" --json number,url)
+          echo "$issue_json" | jq .
+          num=$(echo "$issue_json" | jq -r '.number')
+          url=$(echo "$issue_json" | jq -r '.url')
+          echo "::notice::Tracking issue #$num opened ($url)"
+          echo "issue_number=$num" >>"$GITHUB_OUTPUT"
+
+      - name: Wait for ACK
+        id: wait
+        env:
+          ISSUE: ${{ steps.issue.outputs.issue_number }}
+        run: |
+          echo "::notice::Waiting indefinitely for comment 'ACK' on issue #$ISSUE"
+          while true; do
+            if gh issue view "$ISSUE" --comments --json comments \
+                 | jq -e '.comments[] | select(.body == "ACK")' >/dev/null; then
+              echo "::notice::ACK received."
+              break
+            fi
+            sleep 60
+          done
+
+      - name: Success notice
+        run: echo "::notice::Human‑to‑GPT round complete – workflow finished."
