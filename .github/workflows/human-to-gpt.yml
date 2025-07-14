@@ -6,7 +6,7 @@ on:
       payload_raw:
         description: "Loosely-formatted JSON string (quotes optional, CLI-safe)"
         required: true
-        default: '{"phase":"inbox","conversation_id":"realrun-002","timestamp":"2025-07-09T07:30:00Z","role":"user","content":"Patch staged for implementation. Proceed with validation."}'
+        default: '{"phase":"inbox","conversation_id":"realrun-002","role":"user","content":"Patch staged for implementation. Proceed with validation."}'
         type: string
 
 permissions:
@@ -40,6 +40,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $payload = ConvertFrom-Json -InputObject $env:PAYLOAD_RAW
+          $payload.timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
           $phase = $payload.phase
           if (-not $phase) {
             Write-Error "❌ No phase specified in payload."
@@ -126,18 +127,19 @@ jobs:
           $issueNumber = $issueUrl -replace '.*/', ''
           "ISSUE_NUMBER=$issueNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      - name: Wait for ACK comment (max 60 min)
+      - name: Wait for matching comment (max 60 min)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
         run: |
+          $issue_body = gh issue view $env:ISSUE_NUMBER --json body --jq ".body"
           for ($i = 1; $i -le 60; $i++) {
-            Write-Output "Polling issue #$env:ISSUE_NUMBER for 'ACK' comment (attempt $i/60)…"
+            Write-Output "Polling issue #$env:ISSUE_NUMBER for matching comment (attempt $i/60)…"
             $comments = gh issue view $env:ISSUE_NUMBER --json comments --jq ".comments[].body"
-            if ($comments -contains "ACK") {
-              Write-Output "✅ ACK detected – workflow complete."
+            if ($comments -contains $issue_body) {
+              Write-Output "✅ Matching comment detected – workflow complete."
               exit 0
             }
             Start-Sleep -Seconds 60
           }
-          Write-Error "❌ No ACK after 60 minutes – failing job."
+          Write-Error "❌ No matching comment after 60 minutes – failing job."
