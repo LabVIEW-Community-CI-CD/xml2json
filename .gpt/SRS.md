@@ -2,96 +2,99 @@
 **SRS.md**:
 
 ```markdown
-# Software Requirements Specification (SRS) – **xml2json**
-**Version 1.0 – 13 Jul 2025**
+Software Requirements Specification (SRS) – xml2json
+Version 1.0 – 13 Jul 2025
+1 Introduction
+1.1 Purpose
+The xml2json utility is a standalone command-line tool written in .NET (targeting .NET 8) that converts a LabVIEW VI Package Build (.vipb) file (an XML document) into an equivalent JSON representation. Its primary purpose is to facilitate automated processing of LabVIEW package metadata within CI pipelines and to aid developers in inspecting .vipb content via JSON. This SRS follows IEEE 830-1998 standards to ensure all functional and non-functional requirements are clearly documented.
+1.2 Scope
+This SRS describes the observable behavior of xml2json in terms of inputs, outputs, and user interactions. It covers tool invocation, input format, JSON output, error handling, and quality attributes. The scope is limited to the functionality in the xml2json repository, not including features outside its current purpose (e.g., converting JSON back to .vipb or editing package contents). All specified functionality and behavior should be maintained consistently.
+1.3 Definitions, Acronyms, and Abbreviations
+.vipb – A LabVIEW VI Package Build file (XML format) containing package metadata.
+CLI – Command-Line Interface.
+JSON – JavaScript Object Notation, the output format of this tool.
+CI/CD – Continuous Integration/Continuous Deployment (e.g., automated build pipelines).
+.NET 8 – The version of the .NET runtime and SDK targeted by this tool.
+stdout / stderr – Standard output and standard error streams.
+Exit code – Integer status code returned by a process (0 = success, non-zero = failure).
+RFC 8259 – The official JSON specification.
+1.4 References
+IEEE 830-1998 – IEEE Recommended Practice for Software Requirements Specifications.
+RFC 8259 – The JSON Data Interchange Format.
+Microsoft .NET 8 Documentation.
+LabVIEW Package Specification – .vipb file format documentation.
+1.5 Overview
+The rest of this document provides detailed specifications for xml2json. Section 2 gives an overall description (context, perspective, and constraints). Section 3 lists the functional requirements (specific behaviors). Section 4 lists the non-functional requirements. Section 5 provides a glossary.
+2 Overall Description
+2.1 Product Perspective
+The xml2json utility is a stand-alone CLI application typically invoked as part of an automated CI/CD process or by developers in a terminal. There is no graphical interface; interactions are via command-line arguments and text output. Key points:
+It runs on the .NET 8 runtime with no LabVIEW/NI dependencies, so it can execute on any .NET 8 platform (Windows, Linux, macOS).
+It reads exactly one .vipb file as input (specified by the user) and produces JSON output.
+By default, the JSON is written to standard output (stdout), but the user may redirect it or specify an output file via --output.
+Seed-based design: The CLI usage (--input <file>, --output <file>) and JSON formatting are inherited from the seed vipb2json tool (verified by its CI run)
 
-## 1 Introduction
-### 1.1 Purpose
-The **xml2json** utility is a standalone command-line tool written in .NET (targeting .NET 8) that converts a LabVIEW VI Package Build (`.vipb`) file (essentially an XML document) into an equivalent JSON representation. Its primary purpose is to facilitate automated processing of LabVIEW package metadata within continuous integration (CI) pipelines, as well as to aid developers in inspecting or consuming `.vipb` content via JSON. This SRS (Software Requirements Specification) follows standard practices (e.g., IEEE 830-1998) to ensure all functional and non-functional requirements are clearly documented.
 
-### 1.2 Scope
-This SRS describes the observable behavior of the xml2json utility in terms of its inputs, outputs, and user interactions. It covers how the tool is invoked, the input format it requires, the JSON output it produces, error handling behavior, and relevant quality attributes. The scope is limited to the functionality in the xml2json repository; it does not include details about the internal format of `.vipb` files or any features outside its current purpose (for example, converting JSON back into a `.vipb` file or editing package contents). All functionality and behavior specified here should be maintained consistently.
-
-### 1.3 Definitions, Acronyms, and Abbreviations
-- **`.vipb`** – A LabVIEW VI Package Build file, used for packaging LabVIEW code. It is an XML-format file containing metadata about a package.  
-- **CLI** – Command-Line Interface, a way to interact with a program via text commands in a terminal.  
-- **JSON** – JavaScript Object Notation, a lightweight text-based data interchange format (the output format of this tool).  
-- **CI/CD** – Continuous Integration / Continuous Deployment, referring to automated build/test pipelines (e.g., GitHub Actions) that may invoke this utility.  
-- **.NET 8** – The version of the .NET runtime and SDK targeted by this tool.  
-- **stdout / stderr** – Standard output and standard error streams; the console output channels used by command-line programs.  
-- **Exit code** – An integer status code returned by a process to indicate success (`0`) or failure (non-zero) to the operating system or calling process.  
-- **RFC 8259** – The official JSON specification (see References).
-
-### 1.4 References
-- IEEE 830-1998 – IEEE Recommended Practice for Software Requirements Specifications.  
-- RFC 8259 – The JavaScript Object Notation (JSON) Data Interchange Format.  
-- Microsoft .NET 8 Documentation – (online) documentation for the .NET 8 framework.  
-- LabVIEW Package Specification – Documentation of the `.vipb` file format (informational).
-
-### 1.5 Overview
-The rest of this document provides detailed specifications for xml2json. Section 2 gives the overall description (context, system perspective, and constraints). Section 3 lists the functional requirements (the specific behaviors the tool must exhibit). Section 4 lists the non-functional requirements (quality attributes like performance and portability). Section 5 provides a glossary of terms and acronyms.
-
-## 2 Overall Description
-### 2.1 Product Perspective
-The xml2json utility is a stand-alone CLI application that is typically invoked as part of an automated CI/CD process or by developers manually in a terminal. There is no graphical user interface; all interactions are via command-line arguments and text output. Key points:
-- It runs on the .NET 8 runtime and has **no LabVIEW or NI dependencies**, meaning it can execute on any platform supported by .NET 8 (Windows, Linux, macOS).  
-- It reads exactly one `.vipb` file as input (specified by the user) and produces JSON as output.  
-- By default, the JSON is written to standard output (`stdout`), but the user may redirect it or specify an output file via the `--output` option.  
-- The interface (command-line arguments and exit codes) should remain stable across versions to avoid breaking existing workflows that depend on this tool.
-
-### 2.2 Product Functions
+.
+The interface (arguments and exit codes) should remain stable across versions to avoid breaking existing workflows.
+2.2 Product Functions
 The primary functions of xml2json are:
-- **Input Processing:** Accept a single positional argument (path to the `.vipb` input file). Validate that the file exists and is readable before proceeding.  
-- **XML to JSON Conversion:** Parse the contents of the `.vipb` file (which is an XML structure) and convert it into an equivalent JSON structure, including all elements and attributes present in the input.  
-- **Output Generation:** Emit the resulting JSON output. By default, write to `stdout`. If an `--output <file>` option is provided, write the JSON exclusively to that file. No duplicate output should be produced.  
-- **Help/Usage:** If the user provides `-h` or `--help`, display usage information (program syntax and available options) to `stdout` and then exit (code 0).  
-- **Error Handling:** On error conditions (such as missing input file, invalid XML, or other exceptions), print a clear error message to `stderr`, do not produce any JSON output, and exit with a non-zero status.  
-- **Exit Codes:** Return exit code `0` on success. Return a non-zero exit code on any failure to indicate an error to the calling process.
+Input Processing: Accept an input .vipb file (via --input flag). Validate that the file exists and is readable.
+XML to JSON Conversion: Parse the .vipb (XML) and convert it into an equivalent JSON structure, including all elements and attributes.
+Output Generation: Emit the resulting JSON. By default, write to stdout. If an --output <file> option is provided, write JSON exclusively to that file (no duplicate output).
+Help/Usage: If the user provides -h or --help, display usage information (syntax and options) to stdout and exit with code 0.
+Error Handling: On error (missing file, invalid XML, etc.), print a clear error message to stderr, produce no JSON, and exit with a non-zero status.
+Exit Codes: Return exit code 0 on success and non-zero on any failure.
+2.3 User Characteristics
+CI Systems: Automated pipelines (e.g., GitHub Actions) will call the utility. They require non-interactive mode, use of standard streams for I/O, and reliable exit codes.
+Developers/Build Engineers: May run the tool manually for diagnostics. They use command-line tools and JSON, but need not know .vipb internals; xml2json provides human-readable JSON. They expect concise, clear messages and documentation in English.
+2.4 Constraints
+Implemented in .NET 8; requires .NET 8 runtime.
+One input file per invocation; no batch mode.
+Input file is read-only; tool never modifies it.
+Only supported output format is JSON (RFC 8259).
+Offline operation; no network or external services needed.
+Performance: Convert typical .vipb (≈200 KB) in under ~2 seconds.
+Resource: Memory usage should remain modest (≪128 MB).
+CLI interface (argument names, flags, exit codes) must remain stable for compatibility.
+Tool must run headlessly (no GUI) on all .NET 8 platforms.
+2.5 Assumptions and Dependencies
+Input .vipb is assumed to be valid and generated by LabVIEW or VIPM (though xml2json will validate the XML).
+Uses .NET’s built-in XML and JSON libraries (System.Xml, System.Text.Json).
+Existing CI workflows (e.g., openvipbcli Action) already call this utility; xml2json should remain compatible with those workflows.
+3 Functional Requirements
+CLI invocation: The tool must accept an input file via --input <file.vipb> and an output file via --output <file.json>. If these flags are missing or if extra/invalid arguments are provided, the tool should print a usage error message to stderr and exit with a non-zero code (as seen in the seed tool’s CLI)
 
-### 2.3 User Characteristics
-- **Continuous Integration Systems:** These automated pipelines (e.g., GitHub Actions) will call the utility as part of build or test workflows. They require the tool to be non-interactive (no prompts), to use standard streams for input/output, and to provide reliable exit codes so the pipeline can detect success or failure.  
-- **Developers / Build Engineers:** Individuals may run the tool manually for diagnostics or analysis. They should be comfortable with command-line usage and JSON. They do not need knowledge of `.vipb` internals; the tool abstracts that, providing a human-readable JSON output. Users expect concise, English-language messages and usage instructions.  
 
-There are no non-technical end users; the audience is technical (scripted systems and developers).
+.
+Default output: By default, write the JSON output to standard output (stdout) unless --output <file> is explicitly given. If --output is used, write exclusively to the file (never duplicate output).
+--output <file> flag: If the user provides --output <file>, write the JSON output exclusively to that file (instead of stdout). If writing to the file fails (e.g., permission denied), print an error to stderr and exit with a non-zero code (seed’s implementation writes with File.WriteAllText and catches I/O errors)
 
-### 2.4 Constraints
-- The tool is implemented in .NET 8 and therefore requires a .NET 8 runtime on the target system.  
-- Only one input file is processed per invocation; there is no batch processing mode.  
-- The input `.vipb` file is treated as read-only; the tool does not modify or output any data into the input file.  
-- The only supported output format is JSON (conforming to RFC 8259). No alternative formats are supported.  
-- The tool runs entirely offline and does not require any network access or external services.  
-- **Performance Constraint:** The tool should handle typical `.vipb` sizes quickly (e.g., convert a 200 KB `.vipb` in under 2 seconds on a modern machine).  
-- **Resource Constraint:** Memory usage should be modest (target well under 128 MB).  
-- The CLI interface (argument names, flags, exit codes) should remain stable to preserve compatibility with existing scripts.  
-- The tool must operate in headless mode (no GUI) on all major platforms (.NET 8 compatible: Windows, Linux, macOS).
 
-### 2.5 Assumptions and Dependencies
-- It is assumed that the input `.vipb` is generally a valid package file created by LabVIEW or VI Package Manager. The tool will validate the XML, but it expects proper formatting in the normal case.  
-- The utility depends on .NET’s built-in XML and JSON libraries (e.g., `System.Xml`, `System.Text.Json`); these are included with the .NET 8 runtime.  
-- Existing CI workflows (such as the openvipbcli composite GitHub Action) already call this utility. The tool should remain compatible with those workflows.
+.
+File not found: If the specified input file does not exist or cannot be opened, print "Input file not found" to stderr, exit with a non-zero code, and do not produce any JSON. (Seed’s vipb2json checks File.Exists and reports the missing file)
 
-## 3 Functional Requirements
-1. **CLI invocation:** The tool must accept exactly one positional argument (`<input.vipb>`). If the argument is missing or more than one is provided, the tool should print a usage error message to `stderr` and exit with a non-zero code.  
-2. **Default output:** By default, write the JSON output to standard output (`stdout`). Do not write any output file unless explicitly requested.  
-3. **`--output <file>` flag:** If the user provides `--output <file>`, write the JSON output exclusively to the specified file instead of `stdout`. If the file cannot be written (e.g., permission denied), print an error to `stderr` and exit with a non-zero code.  
-4. **File not found:** If the specified input file does not exist or cannot be opened, print the message **“Input file not found”** to `stderr`, exit with a non-zero code, and do not produce any JSON output.  
-5. **Invalid XML:** If the input file is found but contains malformed XML or is not a valid `.vipb` format, print the message **“Invalid VIPB format”** to `stderr`, exit with a non-zero code, and do not produce any JSON output.  
-6. **Runtime errors:** Catch any other runtime exceptions (e.g. I/O errors, out-of-memory). If such an error occurs, print a clear error message to `stderr`, exit with a non-zero code, and ensure no JSON output is produced. The tool must not crash or emit a stack trace to `stdout`.  
-7. **Help flag:** If the user includes `-h` or `--help` in the arguments, display usage instructions (showing how to use the tool and describing available options) to `stdout` and then exit with code `0`. No further processing should occur when help is requested.
+.
+Invalid XML: If the input file exists but contains malformed XML (or is not valid .vipb), print "Invalid VIPB format" to stderr, exit with a non-zero code, and do not produce any JSON. (Seed’s tool catches XML parsing exceptions and prints an error message)
 
-## 4 Non-Functional Requirements
-- **Correctness:** The JSON output must fully represent the input `.vipb` content. For the same input and tool version, the output JSON must be byte-for-byte identical on each run (deterministic).  
-- **Usability:** The CLI should use familiar conventions (e.g. single-dash for short flags and double-dash for long flags). Messages and documentation should be clear and in English.  
-- **Reliability:** The tool must handle errors as specified; it should never hang or leave partial output files.  
-- **Performance:** As noted above, typical conversions should be fast (on the order of seconds for moderately sized `.vipb` files) and use minimal resources.  
-- **Portability:** The tool must run unchanged on all major OSes supported by .NET 8 (Windows, Linux, macOS) and require only a command-line environment.  
-- **Maintainability:** The code should be modular and well-organized (e.g., separate modules for CLI parsing, conversion logic, and I/O). The repository should include documentation and tests to facilitate future maintenance. Only open-source libraries may be used (no proprietary dependencies).
+.
+Runtime errors: Catch any other runtime exceptions (I/O errors, out-of-memory, etc.). If such an error occurs, print a clear error message to stderr, exit with a non-zero code, and ensure no JSON is produced. The tool must not crash or emit a stack trace to stdout (seed’s implementation follows this practice)
 
-## 5 Glossary
-- **LabVIEW:** A graphical development environment (by National Instruments), here referring to tools that generate `.vipb` files.  
-- **`.vipb`:** VI Package Build file – a LabVIEW package specification (XML format).  
-- **CLI:** Command-Line Interface.  
-- **JSON:** JavaScript Object Notation.  
-- **stdout / stderr:** Standard output / Standard error streams.  
-- **Exit code:** Numeric status returned by a program (`0` = success, non-zero = failure).  
-- **RFC 8259:** The JSON specification standard (see References).  
+.
+Help flag: If the user includes -h or --help in the arguments, display usage instructions (syntax and options) to stdout and exit with code 0. (For example, seed’s vipb2json echoes usage info and exits 0)
+
+.
+4 Non-Functional Requirements
+Correctness: JSON must fully represent the input .vipb content. For the same input and version, output JSON must be byte-for-byte identical on each run.
+Usability: CLI should use familiar conventions (single-dash for short flags, double-dash for long flags). Messages and documentation must be clear and English.
+Reliability: Tool must handle errors as specified; it should never hang or leave partial output.
+Performance: Typical conversions should be fast (on the order of seconds for moderate file sizes) with minimal resources.
+Portability: Tool must run unchanged on all .NET 8-supported OSes (Windows, Linux, macOS) in a command-line environment.
+Maintainability: Code should be modular (separate modules for CLI parsing, conversion, I/O). Repository should include documentation and tests. Only open-source libraries may be used.
+5 Glossary
+LabVIEW: A graphical development environment by NI; here referring to tools that generate .vipb files.
+.vipb: VI Package Build file (XML format).
+CLI: Command-Line Interface.
+JSON: JavaScript Object Notation.
+stdout / stderr: Standard output / Standard error streams.
+Exit code: Numeric status returned by a program (0=success, non-zero=failure).
+RFC 8259: The JSON specification standard.
