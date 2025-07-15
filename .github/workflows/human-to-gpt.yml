@@ -77,36 +77,37 @@ jobs:
           $num = $url -replace '.*/', ''
           "ISSUE=$num" >> $env:GITHUB_OUTPUT
 
-      - name: Wait for exact comment match (≤ 60 min)
+      - name: Wait for matching comment (≤ 60 min)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: ${{ steps.track.outputs.ISSUE }}
         run: |
-          function ExtractBlock([string]$t) {
+          function core($t) {
+            # Strip CRLF, tabs, spaces; lower‑case
+            return (($t -replace '\s','') -replace "`r|`n", '').ToLower()
+          }
+          function grab($t) {
             $t = $t -replace "`r",""
             if ($t -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->') {
-              return $Matches[1].Trim()
-            } else {
-              return $null
-            }
+              return $Matches[1]
+            } else { return '' }
           }
 
-          $expected = ExtractBlock (gh issue view $env:ISSUE --json body --jq ".body")
-          if (-not $expected) { Write-Error "Sentinel block missing in issue body"; exit 1 }
+          $want = core (grab (gh issue view $env:ISSUE --json body --jq ".body"))
+          if (-not $want) { Write-Error "Sentinel missing in issue body"; exit 1 }
 
-          for ($i = 1; $i -le 60; $i++) {
+          for ($i=1; $i -le 60; $i++) {
             Write-Host "Polling $i/60…"
-            $cBodies = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
-            foreach ($c in $cBodies) {
-              $block = ExtractBlock $c
-              if ($block -and $block -eq $expected) {
-                Write-Host "✅ Match detected"
+            $comments = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
+            foreach ($c in $comments) {
+              if (core (grab $c) -eq $want) {
+                Write-Host '✅ Matched comment'
                 exit 0
               }
             }
             Start-Sleep 60
           }
-          Write-Error "No matching comment after 60 min"
+          Write-Error '❌ No match after 60 min'
 
       - name: Create issues from _intake_payload.md
         env:
