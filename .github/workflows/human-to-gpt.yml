@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   intake:
-    runs-on: windows-latest          # change to self‑hosted if needed
+    runs-on: self-hosted           # change to self‑hosted if needed
     timeout-minutes: 90
     defaults:
       run:
@@ -56,47 +56,66 @@ jobs:
         }
         $payload.timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
         if ($payload.phase -ne 'inbox') { Write-Error "phase must be inbox" }
-
         npm i -g ajv-cli@5 ajv-formats@2 | Out-Null
         $tmp = "$env:RUNNER_TEMP\payload.json"
         $payload | ConvertTo-Json -Depth 10 | Out-File $tmp -Encoding utf8
         ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $tmp
-
         Copy-Item $tmp "gpt/inbox/${{ github.run_number }}.json"
 
     # ------------------------------------------------------------
-    # 4. Open tracking issue with visible token
+    # 4a. Generate helper script that opens the tracking issue
+    # ------------------------------------------------------------
+    - name: Write helper script (open-issue.ps1)
+      shell: pwsh
+      run: |
+        @'
+        param(
+          [int]$RunNumber
+        )
+
+        # Create token and issue body
+        $token = "TOKEN-" + ([guid]::NewGuid().ToString("N").Substring(0,8))
+        $body  = @"
+## Action required
+Copy this exact line and paste it as a **new comment**:
+
+$token
+"@
+
+        # Open tracking issue
+        $url = gh issue create `
+          --title  "GPT Intake $RunNumber" `
+          --body   $body `
+          --label  gpt-intake
+        $num = $url -replace '.*/', ''
+
+        # Surface outputs for downstream steps
+        "ISSUE=$num"  >> $env:GITHUB_OUTPUT
+        "TOKEN=$token" >> $env:GITHUB_OUTPUT
+        '@ | Set-Content -Path .\open-issue.ps1
+
+    # ------------------------------------------------------------
+    # 4b. Execute helper script
     # ------------------------------------------------------------
     - name: Open tracking issue
-      id: track
+      id: track                       # consumers of outputs stay unchanged
+      shell: pwsh
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        $run   = "${{ github.run_number }}"
-        $token = "TOKEN-" + ([guid]::NewGuid().ToString("N").Substring(0,8))
-        $body  = @"
-          ## Action required
-          Copy this exact line and paste it as a **new comment**:
-
-          $token
-          "@
-
-        $url = gh issue create --title "GPT Intake $run" --body "$body" --label gpt-intake
-        $num = $url -replace '.*/', ''
-        "ISSUE=$num"   >> $env:GITHUB_OUTPUT
-        "TOKEN=$token" >> $env:GITHUB_OUTPUT
+        .\open-issue.ps1 -RunNumber ${{ github.run_number }}
 
     # ------------------------------------------------------------
     # 5. Poll comments for exact token (case/whitespace agnostic)
     # ------------------------------------------------------------
-    - name: Wait for matching token (≤ 60 min)
+    - name: Wait for matching token (≤ 60 min)
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         ISSUE: ${{ steps.track.outputs.ISSUE }}
         TOKEN: ${{ steps.track.outputs.TOKEN }}
       run: |
         $want = $env:TOKEN.ToLower().Trim()
-        for ($i=1; $i -le 60; $i++) {
+        for ($i = 1; $i -le 60; $i++) {
           Write-Host "Polling $i/60…"
           $comments = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
           foreach ($c in $comments) {
@@ -110,7 +129,7 @@ jobs:
         Write-Error "❌ No matching comment after 60 min"
 
     # ------------------------------------------------------------
-    # 6. Create GitHub Issues from _intake_payload.md
+    # 6. Create GitHub issues from _intake_payload.md
     # ------------------------------------------------------------
     - name: Create issues from intake payload
       env:
@@ -118,19 +137,17 @@ jobs:
       run: |
         $file = "gpt/issues/_intake_payload.md"
         if (-not (Test-Path $file)) { Write-Error "$file not found" }
-
-        $md = Get-Content $file -Raw -Encoding UTF8
+        $md     = Get-Content $file -Raw -Encoding UTF8
         $blocks = ($md -replace "`r","") -split "(?m)^\s*---\s*$"
-        $n = 0
+        $n      = 0
         foreach ($b in $blocks) {
           $b = $b.Trim()
           if (-not $b) { continue }
-          $header, $rest = $b -split "`n",2
+          $header, $rest = $b -split "`n", 2
           if (-not $rest) { continue }
           if ($rest -match "(?m)^#\s+(.+?)\s*$") { $title = $Matches[1].Trim() } else { continue }
-          if ($header -match "Phase\s+(\d+)") { $label = "phase$($Matches[1])" } else { $label = "gpt" }
-
-          $body = $rest.Substring($rest.IndexOf("`n")+1).Trim()
+          if ($header -match "Phase\s+(\d+)")   { $label = "phase$($Matches[1])" } else { $label = "gpt" }
+          $body = $rest.Substring($rest.IndexOf("`n") + 1).Trim()
           $tmp  = "$env:RUNNER_TEMP\issue.md"
           $body | Out-File $tmp -Encoding utf8
           gh issue create --title "$title" --body-file "$tmp" --label "$label"
