@@ -1,15 +1,19 @@
-name: Human ↔ GPT Intake          # keep the friendly display name
-
+name: Human ↔ GPT Intake
 on:
   workflow_dispatch:
     inputs:
       payload_raw:
         description: 'Loosely‑formatted JSON string ("timestamp" may be empty)'
-        type: string
         required: true
-        # One‑line (> block) avoids stray CR/LF characters that break ConvertFrom‑Json
-        default: >
-          {"phase":"inbox","conversation_id":"xml2json-intake-001","timestamp":"","role":"user","content":"Please ingest gpt/issues/_intake_payload.md and create GitHub issues."}
+        default: |
+          {
+            "phase": "inbox",
+            "conversation_id": "xml2json-intake-001",
+            "timestamp": "",
+            "role": "user",
+            "content": "Please ingest gpt/issues/_intake_payload.md and create GitHub issues."
+          }
+        type: string
 
 permissions:
   contents: write
@@ -17,151 +21,116 @@ permissions:
 
 jobs:
   intake:
-    # ─────────────────────────────────────────────────────────────────────────────
-    # 1)  Use a GitHub‑hosted runner by default.  If you *must* stay self‑hosted,
-    #     leave "self‑hosted" in the array *and* keep the GH‑CLI install step.
-    # ─────────────────────────────────────────────────────────────────────────────
-    runs-on: [windows-latest]      # or [self-hosted, windows] if you really need it
+    runs-on: [self-hosted, windows]
     timeout-minutes: 90
-
     defaults:
       run:
         shell: pwsh
 
     steps:
-    # 1 – Checkout
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      # 1 – Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    # 2 – Ensure GitHub CLI is available (hosted runners already have it; self‑hosted may not)
-    - name: Ensure GitHub CLI is installed
-      if: runner.os == 'Windows'
-      run: |
-        if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-          choco install gh -y                   # <‑‑ simplest for Windows
-        }
-        gh --version
+      # 2 – Ensure inbox directory
+      - name: Ensure inbox directory exists
+        run: |
+          New-Item -ItemType Directory -Path gpt/inbox -Force
 
-    # 3 – Ensure inbox directory
-    - name: Ensure inbox directory exists
-      run: New-Item -ItemType Directory -Path gpt/inbox -Force
+      # 3 – Setup Node (for AJV)
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
 
-    # 4 – Setup Node (AJV needs a recent runtime)
-    - name: Setup Node.js
-      uses: actions/setup-node@v4           # v4 gives you Node 20 by default
-      with:
-        node-version: 20
-
-    # 5 – Parse + validate payload
-    - name: Parse and validate input
-      id: validate
-      env:
-        PAYLOAD_RAW: ${{ github.event.inputs.payload_raw }}
-      run: |
-        $ErrorActionPreference = 'Stop'
-
-        # ---------- Parse ----------
-        $payload = $env:PAYLOAD_RAW | ConvertFrom-Json
-
-        if (-not $payload.PSObject.Properties['timestamp']) {
-          $payload | Add-Member -NotePropertyName timestamp -NotePropertyValue ''
-        }
-        $payload.timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-        if ($payload.phase -ne 'inbox') {
-          throw "❌ phase must be 'inbox'."
-        }
-
-        # ---------- Validate ----------
-        npm install -g ajv-cli@5 ajv-formats@2 | Out-Null
-        $tmp = Join-Path $env:RUNNER_TEMP 'payload.json'
-        $payload | ConvertTo-Json -Depth 10 | Out-File -FilePath $tmp -Encoding utf8
-        ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $tmp
-
-        $dest = "gpt/inbox/${{ github.run_number }}.json"
-        Copy-Item $tmp $dest
-
-    # 6 – Upload artifact
-    - name: Upload intake artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: gpt-intake-${{ github.run_number }}
-        path: gpt/inbox/${{ github.run_number }}.json
-
-    # 7 – Commit & push (PR fallback)
-    - name: Commit & push (PR fallback)
-      id: commit
-      env:
-        # Prefer a PAT for branch‑protected repos, otherwise fall back to the
-        # built‑in token.
-        GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-      run: |
-        git config user.name  "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
-
-        git add gpt/inbox
-        if (git diff --cached --quiet) {
-          Write-Host "No changes – skipping commit."
-          "PR_URL=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "BRANCH="  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          exit 0
-        }
-
-        git commit -m "🤖 GPT intake: add payload ${{ github.run_number }}"
-        git push origin HEAD:main 2>$null
-
-        if ($LASTEXITCODE -eq 0) {
-          # Pushed directly to main – nothing else to do
-          "PR_URL=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "BRANCH="  | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-        } else {
-          # Branch‑protection blocked us – open a PR instead
-          $branch  = "gpt-input-${{ github.run_number }}"
-          git push -u origin HEAD:$branch
-          $prUrl = gh pr create --base main --head $branch --title "GPT Intake ${{ github.run_number }}" --body "Automated intake PR for payload ${{ github.run_number }}"
-          "PR_URL=$prUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "BRANCH=$branch" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-        }
-
-    # 8 – Open tracking issue
-    - name: Open tracking issue
-      id: issue
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        PR_URL:  ${{ steps.commit.outputs.PR_URL }}
-      run: |
-        $ts = "${{ github.run_number }}"
-        $block = @"
-        **Action required →**
-        Copy **this entire block** (including this line) and paste it as a **new comment** on this issue.
-        _Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
-        "@
-
-        $body = if ($env:PR_URL) {
-          "Payload timestamp: $ts`n`nRelated PR: $env:PR_URL`n`n$block"
-        } else {
-          "Payload timestamp: $ts`n`n$block"
-        }
-
-        $issueUrl    = gh issue create --title "GPT Intake $ts" --body $body --label gpt-intake
-        $issueNumber = $issueUrl -replace '.*/', ''
-        "ISSUE_NUMBER=$issueNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-    # 9 – Wait for exact‑match comment
-    - name: Wait for matching comment (max 60 min)
-      env:
-        GH_TOKEN:     ${{ secrets.GITHUB_TOKEN }}
-        ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
-      run: |
-        $target = gh issue view $env:ISSUE_NUMBER --json body --jq ".body"
-        for ($i = 1; $i -le 60; $i++) {
-          Write-Host "Polling issue #$env:ISSUE_NUMBER (attempt $i/60)…"
-          $comments = gh issue view $env:ISSUE_NUMBER --json comments --jq ".comments[].body"
-          if ($comments -contains $target) {
-            Write-Host "✅ Matching comment detected."
-            exit 0
+      # 4 – Parse + validate payload
+      - name: Parse and validate input
+        id: validate
+        env:
+          PAYLOAD_RAW: ${{ github.event.inputs.payload_raw }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payload = ConvertFrom-Json -InputObject $env:PAYLOAD_RAW
+          if (-not $payload.PSObject.Properties['timestamp']) {
+            $payload | Add-Member -NotePropertyName timestamp -NotePropertyValue ''
           }
-          Start-Sleep -Seconds 60
-        }
-        throw "❌ No matching comment after 60 minutes."
+          $payload.timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+          if ($payload.phase -ne 'inbox') { Write-Error "❌ phase must be 'inbox'." }
+          npm install -g ajv-cli@5 ajv-formats@2 | Out-Null
+          $temp = Join-Path $env:RUNNER_TEMP 'payload.json'
+          $payload | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 -FilePath $temp
+          ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $temp
+          $inboxPath = "gpt/inbox/${{ github.run_number }}.json"
+          Copy-Item -Path $temp -Destination $inboxPath
+
+      # 5 – Upload artifact
+      - name: Upload intake artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-intake-${{ github.run_number }}
+          path: gpt/inbox/${{ github.run_number }}.json
+
+      # 6 – Commit & push (PR fallback)
+      - name: Commit & push (PR fallback)
+        id: commit
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gpt/inbox
+          git commit -m "🤖 GPT intake: add payload ${{ github.run_number }}" 2>$null
+          git push origin HEAD:main 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            "PR_URL=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            $branch = "gpt-input-${{ github.run_number }}"
+            git push -u origin HEAD:$branch
+            $pr = gh pr create --base main --head $branch --title "GPT Intake ${{ github.run_number }}" --body "Automated intake PR"
+            "PR_URL=$pr" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      # 7 – Open tracking issue
+      - name: Open tracking issue
+        id: issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.commit.outputs.PR_URL }}
+        run: |
+          $ts = "${{ github.run_number }}"
+          $instruction = @"
+          **Action required →**  
+          Copy **this entire block** (including this line) and paste it as a **new comment** on this issue.  
+          _Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
+          "@
+          if ($env:PR_URL) {
+            $body = "Payload timestamp: $ts`n`nRelated PR: $env:PR_URL`n`n$instruction"
+          } else {
+            $body = "Payload timestamp: $ts`n`n$instruction"
+          }
+          $issue = gh issue create --title "GPT Intake $ts" --body $body --label "gpt-intake"
+          $num = $issue -replace '.*/', ''
+          "ISSUE_NUMBER=$num" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # 8 – Wait for exact‑match comment (robust normalization)
+      - name: Wait for matching comment (max 60 min)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
+        run: |
+          function Normalize([string]$s) { return ($s -replace "`r", "").TrimEnd() }
+          $expected = Normalize (gh issue view $env:ISSUE_NUMBER --json body --jq ".body")
+          for ($i = 1; $i -le 60; $i++) {
+            Write-Output "Polling issue #$env:ISSUE_NUMBER (attempt $i/60)…"
+            $comments = gh issue view $env:ISSUE_NUMBER --json comments --jq ".comments[].body"
+            foreach ($c in $comments) {
+              if (Normalize $c -eq $expected) {
+                Write-Output "✅ Matching comment detected – workflow continues."
+                exit 0
+              }
+            }
+            Start-Sleep -Seconds 60
+          }
+          Write-Error "❌ No matching comment after 60 minutes – failing job."
