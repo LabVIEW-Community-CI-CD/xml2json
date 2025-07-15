@@ -32,7 +32,11 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: '18'
-
+          
+      - name: Ensure inbox directory exists
+        run: |
+          New-Item -ItemType Directory -Path gpt/inbox -Force
+          
       - name: Parse and validate input
         id: validate
         env:
@@ -55,7 +59,7 @@ jobs:
 
           ajv validate -c ajv-formats -s .gpt/schemas/intake-v1.json -d $tempPath
 
-          $inboxPath = ".gpt/inbox/${{ github.run_number }}.json"
+          $inboxPath = "gpt/inbox/${{ github.run_number }}.json"
           Copy-Item -Path $tempPath -Destination $inboxPath
           "TIMESTAMP=${{ github.run_number }}" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
