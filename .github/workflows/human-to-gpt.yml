@@ -124,12 +124,17 @@ jobs:
           PR_URL: ${{ steps.commit.outputs.PR_URL }}
         run: |
           $ts = "${{ github.run_number }}"
+          $payloadLine = "Payload timestamp: $ts"
+          $instruction = @"
+          Copy **this full block** and paste it back as a *new comment* on this issue.
+          (Do not add or remove any characters – the workflow checks for an exact match.)
+          "@
           if ($env:PR_URL) {
-            $body = "Payload timestamp: $ts`n`nRelated PR: $env:PR_URL"
+            $body = "$payloadLine`n`nRelated PR: $env:PR_URL`n`n$instruction"
+          } else {
+            $body = "$payloadLine`n`n$instruction"
           }
-          else {
-            $body = "Payload timestamp: $ts"
-          }
+
           $issueUrl = gh issue create --title "GPT Intake $ts" --body $body --label "gpt-intake"
           $issueNumber = $issueUrl -replace '.*/', ''
           "ISSUE_NUMBER=$issueNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
