@@ -1,4 +1,5 @@
 name: Human ↔ GPT Intake
+
 on:
   workflow_dispatch:
     inputs:
@@ -21,82 +22,151 @@ permissions:
 
 jobs:
   intake:
-    runs-on: windows-latest        # use GitHub‑hosted runner; change if you need self‑hosted
+    runs-on: windows-latest      # change if you must use self‑hosted
     timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
 
     steps:
-      # 1 – Checkout
+      # ------------------------------------------------------------
+      # 1: Checkout
+      # ------------------------------------------------------------
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      # 2 – Ensure inbox dir
-      - name: Ensure gpt/inbox exists
-        run: |
-          New-Item -ItemType Directory -Path gpt/inbox -Force
+      # ------------------------------------------------------------
+      # 2: Ensure gpt/inbox directory
+      # ------------------------------------------------------------
+      - name: Ensure inbox dir
+        run: New-Item -ItemType Directory -Path gpt/inbox -Force
 
-      # 3 – Setup Node (AJV)
+      # ------------------------------------------------------------
+      # 3: Setup Node.js (AJV)
+      # ------------------------------------------------------------
       - name: Setup Node
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: 18
 
-      # 4 – Parse & validate payload
-      - name: Parse + validate
+      # ------------------------------------------------------------
+      # 4: Parse + validate payload
+      # ------------------------------------------------------------
+      - name: Parse + validate input
         id: parse
         env:
           RAW: ${{ github.event.inputs.payload_raw }}
         run: |
-          $p = ConvertFrom-Json $env:RAW
-          if (-not $p.PSObject.Properties['timestamp']) {
-            $p | Add-Member timestamp ''
+          $payload = ConvertFrom-Json $env:RAW
+          if (-not $payload.PSObject.Properties['timestamp']) {
+            $payload | Add-Member timestamp ''
           }
-          $p.timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-          if ($p.phase -ne 'inbox') { Write-Error "phase must be inbox" }
+          $payload.timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+          if ($payload.phase -ne 'inbox') { Write-Error "phase must be inbox" }
+
           npm i -g ajv-cli@5 ajv-formats@2 | Out-Null
-          $tmp = Join-Path $env:RUNNER_TEMP payload.json
-          $p | ConvertTo-Json -Depth 10 | Out-File $tmp -Encoding utf8
+          $tmp = "$env:RUNNER_TEMP\payload.json"
+          $payload | ConvertTo-Json -Depth 10 | Out-File $tmp -Encoding utf8
           ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $tmp
+
           Copy-Item $tmp "gpt/inbox/${{ github.run_number }}.json"
 
-      # 5 – Open tracking issue with sentinel block
+      # ------------------------------------------------------------
+      # 5: Open tracking issue with sentinel block
+      # ------------------------------------------------------------
       - name: Open tracking issue
         id: track
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $run   = "${{ github.run_number }}"
-          $block = "<!-- GPT-BEGIN -->`nPayload timestamp: $run`n<!-- GPT-END -->"
-          $body  = "$block`n`nCopy **the block above** (including GPT-BEGIN/END) and paste it as a comment."
-          $url   = gh issue create --title "GPT Intake $run" --body $body --label gpt-intake
-          $num   = $url -replace '.*/', ''
+          $run = "${{ github.run_number }}"
+          $sentinel = "<!-- GPT-BEGIN -->`nPayload timestamp: $run`n<!-- GPT-END -->"
+          $body = @"
+          $sentinel
+
+          Copy **this entire block** (including GPT-BEGIN/END) and paste it as a **new comment** on this issue.
+          _Do not add or remove anything._  The CI job will resume when it detects an exact‑match comment.
+          "@
+          $url = gh issue create --title "GPT Intake $run" --body $body --label gpt-intake
+          $num = $url -replace '.*/', ''
           "ISSUE=$num" >> $env:GITHUB_OUTPUT
 
-      # 6 – Wait for exact block match (CR/LF agnostic)
-      - name: Wait for matching comment (60 min)
+      # ------------------------------------------------------------
+      # 6: Wait for exact block match (CR/LF agnostic)
+      # ------------------------------------------------------------
+      - name: Wait for matching comment (≤ 60 min)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: ${{ steps.track.outputs.ISSUE }}
         run: |
           function ExtractBlock($text) {
-            $t = ($text -replace "`r","")            # strip CR
-            if ($t -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->') {
-              return $Matches[1].Trim()
-            } else { return '' }
+            ($text -replace "`r","") -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->' | Out-Null
+            return $Matches[1].Trim()
           }
 
           $expected = ExtractBlock (gh issue view $env:ISSUE --json body --jq ".body")
-          for ($i=1; $i -le 60; $i++) {
-            Write-Output "Poll $i/60…"
+
+          for ($i = 1; $i -le 60; $i++) {
+            Write-Host "Polling (attempt $i/60)…"
             $comments = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
             foreach ($c in $comments) {
-              if (ExtractBlock $c -eq $expected) {
-                Write-Output "✅ Match detected"
+              if (ExtractBlock($c) -eq $expected) {
+                Write-Host "✅ Block match detected"
                 exit 0
               }
             }
             Start-Sleep 60
           }
-          Write-Error "No matching comment after 60 min"
+          Write-Error "❌ No matching comment after 60 min"
+
+      # ------------------------------------------------------------
+      # 7: Create issues from intake payload
+      # ------------------------------------------------------------
+      - name: Create issues from _intake_payload.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $file = "gpt/issues/_intake_payload.md"
+          if (-not (Test-Path $file)) {
+            Write-Error "$file not found"
+          }
+
+          $content = Get-Content $file -Raw
+
+          # split on --- lines with regex that matches full line of dashes
+          $blocks = ($content -replace "`r","") -split "(?m)^\s*---\s*$"
+
+          $created = 0
+          foreach ($block in $blocks) {
+            $b = $block.Trim()
+            if (-not $b) { continue }
+
+            # Header line e.g. **Phase 1 – Issue 1**
+            $header, $rest = $b -split "`n",2
+            if (-not $rest) { continue }
+
+            # Title line (starts with '# ')
+            if ($rest -match "(?m)^#\s+(.+?)\s*$") {
+              $title = $Matches[1].Trim()
+            } else { continue }
+
+            # Derive label phaseX from header
+            if ($header -match 'Phase\s+(\d+)') {
+              $label = "phase$($Matches[1])"
+            } else {
+              $label = "unlabelled"
+            }
+
+            # Body for GitHub issue (everything after title line)
+            $bodyStart = $rest.IndexOf("`n") + 1
+            $body = $rest.Substring($bodyStart).Trim()
+
+            # Write body to temp file to preserve newlines
+            $tmp = "$env:RUNNER_TEMP\issue.md"
+            $body | Out-File $tmp -Encoding utf8
+
+            gh issue create --title "$title" --body-file "$tmp" --label "$label"
+            $created++
+          }
+
+          Write-Host "Created $created issues."
