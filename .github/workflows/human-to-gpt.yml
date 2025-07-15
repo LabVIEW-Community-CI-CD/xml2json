@@ -6,7 +6,14 @@ on:
       payload_raw:
         description: 'Loosely‑formatted JSON string ("timestamp" may be empty)'
         required: true
-        default: '{"phase":"inbox","conversation_id":"xml2json-intake-001","timestamp":"","role":"user","content":"Please ingest gpt/issues/_intake_payload.md and create GitHub issues."}'
+        default: |
+          {
+            "phase": "inbox",
+            "conversation_id": "xml2json-intake-001",
+            "timestamp": "",
+            "role": "user",
+            "content": "Please ingest gpt/issues/_intake_payload.md and create GitHub issues."
+          }
         type: string
 
 permissions:
@@ -22,32 +29,24 @@ jobs:
         shell: pwsh
 
     steps:
-      # ------------------------------------------------------------
-      # 1. Checkout repository
-      # ------------------------------------------------------------
+      # 1 – Checkout
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ------------------------------------------------------------
-      # 2. Ensure gpt/inbox directory exists
-      # ------------------------------------------------------------
+      # 2 – Ensure inbox directory
       - name: Ensure inbox directory exists
         run: |
           New-Item -ItemType Directory -Path gpt/inbox -Force
 
-      # ------------------------------------------------------------
-      # 3. Setup Node.js (for AJV JSON‑schema validation)
-      # ------------------------------------------------------------
+      # 3 – Setup Node (for AJV)
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '18'
 
-      # ------------------------------------------------------------
-      # 4. Parse and validate input payload
-      # ------------------------------------------------------------
+      # 4 – Parse + validate payload
       - name: Parse and validate input
         id: validate
         env:
@@ -55,42 +54,33 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Parse payload JSON
           $payload = ConvertFrom-Json -InputObject $env:PAYLOAD_RAW
 
-          # Inject canonical UTC timestamp if field exists (placeholder may be empty)
           if (-not $payload.PSObject.Properties['timestamp']) {
             $payload | Add-Member -NotePropertyName timestamp -NotePropertyValue ''
           }
           $payload.timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-          # Very basic schema check (phase must be "inbox")
           if ($payload.phase -ne 'inbox') {
             Write-Error "❌ phase must be 'inbox'."
           }
 
-          # Validate against schema with AJV
           npm install -g ajv-cli@5 ajv-formats@2 | Out-Null
           $tempPath = Join-Path $env:RUNNER_TEMP 'payload.json'
           $payload | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 -FilePath $tempPath
           ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $tempPath
 
-          # Save canonical payload into gpt/inbox
           $inboxPath = "gpt/inbox/${{ github.run_number }}.json"
           Copy-Item -Path $tempPath -Destination $inboxPath
 
-      # ------------------------------------------------------------
-      # 5. Upload payload artifact
-      # ------------------------------------------------------------
+      # 5 – Upload artifact
       - name: Upload intake artifact
         uses: actions/upload-artifact@v4
         with:
           name: gpt-intake-${{ github.run_number }}
           path: gpt/inbox/${{ github.run_number }}.json
 
-      # ------------------------------------------------------------
-      # 6. Commit & push payload (PR‑fallback)
-      # ------------------------------------------------------------
+      # 6 – Commit & push (PR fallback)
       - name: Commit & push (PR fallback)
         id: commit
         env:
@@ -113,9 +103,7 @@ jobs:
             "PR_URL=$prUrl" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
 
-      # ------------------------------------------------------------
-      # 7. Open tracking issue with clear instructions
-      # ------------------------------------------------------------
+      # 7 – Open tracking issue
       - name: Open tracking issue
         id: issue
         env:
@@ -127,7 +115,7 @@ jobs:
           $instruction = @"
 **Action required →**  
 Copy **this entire block** (including this line) and paste it as a **new comment** on this issue.  
-_Do not add or remove anything._   The CI job will resume when it detects an exact‑match comment.
+_Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
 "@
 
           if ($env:PR_URL) {
@@ -140,10 +128,8 @@ _Do not add or remove anything._   The CI job will resume when it detects an 
           $issueNumber = $issueUrl -replace '.*/', ''
           "ISSUE_NUMBER=$issueNumber" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
-      # ------------------------------------------------------------
-      # 8. Wait for exact‑match comment
-      # ------------------------------------------------------------
-      - name: Wait for matching comment (max 60 min)
+      # 8 – Wait for exact‑match comment
+      - name: Wait for matching comment (max 60 min)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
