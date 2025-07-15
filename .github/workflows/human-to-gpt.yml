@@ -22,124 +22,117 @@ permissions:
 
 jobs:
   intake:
-    runs-on: windows-latest
+    runs-on: windows-latest          # change to self‑hosted if needed
     timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    # ------------------------------------------------------------
+    # 1. Checkout code
+    # ------------------------------------------------------------
+    - name: Checkout repo
+      uses: actions/checkout@v4
 
-      - name: Ensure gpt/inbox directory exists
-        run: |
-          New-Item -ItemType Directory -Path gpt/inbox -Force
+    # ------------------------------------------------------------
+    # 2. Ensure gpt/inbox directory
+    # ------------------------------------------------------------
+    - name: Ensure gpt/inbox exists
+      run: |
+        New-Item -ItemType Directory -Path gpt/inbox -Force
 
-      - name: Setup Node (for AJV)
-        uses: actions/setup-node@v3
-        with:
-          node-version: 18
+    # ------------------------------------------------------------
+    # 3. Parse + validate payload JSON
+    # ------------------------------------------------------------
+    - name: Parse + validate payload
+      id: parse
+      env:
+        RAW: ${{ github.event.inputs.payload_raw }}
+      run: |
+        $payload = ConvertFrom-Json $env:RAW
+        if (-not $payload.PSObject.Properties['timestamp']) {
+          $payload | Add-Member timestamp ''
+        }
+        $payload.timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+        if ($payload.phase -ne 'inbox') { Write-Error "phase must be inbox" }
 
-      - name: Parse and validate input
-        id: parse
-        env:
-          RAW: ${{ github.event.inputs.payload_raw }}
-        run: |
-          $payload = ConvertFrom-Json $env:RAW
-          if (-not $payload.PSObject.Properties['timestamp']) {
-            $payload | Add-Member timestamp ''
-          }
-          $payload.timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
-          if ($payload.phase -ne 'inbox') { Write-Error "phase must be inbox" }
+        npm i -g ajv-cli@5 ajv-formats@2 | Out-Null
+        $tmp = "$env:RUNNER_TEMP\payload.json"
+        $payload | ConvertTo-Json -Depth 10 | Out-File $tmp -Encoding utf8
+        ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $tmp
 
-          npm i -g ajv-cli@5 ajv-formats@2 | Out-Null
-          $tmp = "$env:RUNNER_TEMP\payload.json"
-          $payload | ConvertTo-Json -Depth 10 | Out-File $tmp -Encoding utf8
-          ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $tmp
+        Copy-Item $tmp "gpt/inbox/${{ github.run_number }}.json"
 
-          Copy-Item $tmp "gpt/inbox/${{ github.run_number }}.json"
+    # ------------------------------------------------------------
+    # 4. Open tracking issue with visible token
+    # ------------------------------------------------------------
+    - name: Open tracking issue
+      id: track
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $run   = "${{ github.run_number }}"
+        $token = "TOKEN-" + ([guid]::NewGuid().ToString("N").Substring(0,8))
+        $body  = @"
+          ## Action required
+          Copy this exact line and paste it as a **new comment**:
 
-      - name: Open tracking issue (sentinel block)
-        id: track
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $run = "${{ github.run_number }}"
-          $sentinel = "<!-- GPT-BEGIN -->`nPayload timestamp: $run`n<!-- GPT-END -->"
-          $body = @"
-          $sentinel
-
-          Copy **this entire block** (including GPT-BEGIN/END) and paste it as a **new comment** on this issue.
-          _Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
+          $token
           "@
+        $url = gh issue create --title "GPT Intake $run" --body "$body" --label gpt-intake
+        $num = $url -replace '.*/', ''
+        "ISSUE=$num"   >> $env:GITHUB_OUTPUT
+        "TOKEN=$token" >> $env:GITHUB_OUTPUT
 
-          # NEW: write body to a temp file, then pass --body-file
-          $tmpBody = "$env:RUNNER_TEMP\track_body.md"
-          $body | Out-File $tmpBody -Encoding utf8
-
-          $url = gh issue create --title "GPT Intake $run" --body-file "$tmpBody" --label gpt-intake
-          $num = $url -replace '.*/', ''
-          "ISSUE=$num" >> $env:GITHUB_OUTPUT
-
-
-      - name: Wait for matching comment (≤ 60 min)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE: ${{ steps.track.outputs.ISSUE }}
-        run: |
-          function core($t) {
-            # Strip CRLF, tabs, spaces; lower‑case
-            return (($t -replace '\s','') -replace "`r|`n", '').ToLower()
-          }
-          function grab($t) {
-            $t = $t -replace "`r",""
-            if ($t -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->') {
-              return $Matches[1]
-            } else { return '' }
-          }
-
-          $want = core (grab (gh issue view $env:ISSUE --json body --jq ".body"))
-          if (-not $want) { Write-Error "Sentinel missing in issue body"; exit 1 }
-
-          for ($i=1; $i -le 60; $i++) {
-            Write-Host "Polling $i/60…"
-            $comments = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
-            foreach ($c in $comments) {
-              if (core (grab $c) -eq $want) {
-                Write-Host '✅ Matched comment'
-                exit 0
-              }
+    # ------------------------------------------------------------
+    # 5. Poll comments for exact token (case/whitespace agnostic)
+    # ------------------------------------------------------------
+    - name: Wait for matching token (≤ 60 min)
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        ISSUE: ${{ steps.track.outputs.ISSUE }}
+        TOKEN: ${{ steps.track.outputs.TOKEN }}
+      run: |
+        $want = $env:TOKEN.ToLower().Trim()
+        for ($i=1; $i -le 60; $i++) {
+          Write-Host "Polling $i/60…"
+          $comments = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
+          foreach ($c in $comments) {
+            if ($c.ToLower().Trim() -eq $want) {
+              Write-Host "✅ Token match detected"
+              exit 0
             }
-            Start-Sleep 60
           }
-          Write-Error '❌ No match after 60 min'
+          Start-Sleep 60
+        }
+        Write-Error "❌ No matching comment after 60 min"
 
-      - name: Create issues from _intake_payload.md
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $file = "gpt/issues/_intake_payload.md"
-          if (-not (Test-Path $file)) { Write-Error "$file not found" }
+    # ------------------------------------------------------------
+    # 6. Create GitHub Issues from _intake_payload.md
+    # ------------------------------------------------------------
+    - name: Create issues from intake payload
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        $file = "gpt/issues/_intake_payload.md"
+        if (-not (Test-Path $file)) { Write-Error "$file not found" }
 
-          $data = Get-Content $file -Raw -Encoding UTF8
-          $parts = ($data -replace "`r","") -split "(?m)^\s*---\s*$"
-          $count = 0
-          foreach ($p in $parts) {
-            $p = $p.Trim()
-            if (-not $p) { continue }
+        $md = Get-Content $file -Raw -Encoding UTF8
+        $blocks = ($md -replace "`r","") -split "(?m)^\s*---\s*$"
+        $n = 0
+        foreach ($b in $blocks) {
+          $b = $b.Trim()
+          if (-not $b) { continue }
+          $header, $rest = $b -split "`n",2
+          if (-not $rest) { continue }
+          if ($rest -match "(?m)^#\s+(.+?)\s*$") { $title = $Matches[1].Trim() } else { continue }
+          if ($header -match "Phase\s+(\d+)") { $label = "phase$($Matches[1])" } else { $label = "gpt" }
 
-            $header, $rest = $p -split "`n", 2
-            if (-not $rest) { continue }
-
-            if ($rest -match "(?m)^#\s+(.+?)\s*$") { $title = $Matches[1].Trim() } else { continue }
-            if ($header -match "Phase\s+(\d+)") { $label = "phase$($Matches[1])" } else { $label = "gpt" }
-
-            $body = $rest.Substring($rest.IndexOf("`n")+1).Trim()
-            $tmp = "$env:RUNNER_TEMP\issue.md"
-            $body | Out-File $tmp -Encoding utf8
-
-            gh issue create --title "$title" --body-file "$tmp" --label "$label"
-            $count++
-          }
-          Write-Host "Created $count issues."
+          $body = $rest.Substring($rest.IndexOf("`n")+1).Trim()
+          $tmp  = "$env:RUNNER_TEMP\issue.md"
+          $body | Out-File $tmp -Encoding utf8
+          gh issue create --title "$title" --body-file "$tmp" --label "$label"
+          $n++
+        }
+        Write-Host "Created $n issues."
