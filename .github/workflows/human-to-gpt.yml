@@ -73,9 +73,15 @@ jobs:
           Copy **this entire block** (including GPT-BEGIN/END) and paste it as a **new comment** on this issue.
           _Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
           "@
-          $url = gh issue create --title "GPT Intake $run" --body $body --label gpt-intake
+
+          # NEW: write body to a temp file, then pass --body-file
+          $tmpBody = "$env:RUNNER_TEMP\track_body.md"
+          $body | Out-File $tmpBody -Encoding utf8
+
+          $url = gh issue create --title "GPT Intake $run" --body-file "$tmpBody" --label gpt-intake
           $num = $url -replace '.*/', ''
           "ISSUE=$num" >> $env:GITHUB_OUTPUT
+
 
       - name: Wait for matching comment (≤ 60 min)
         env:
