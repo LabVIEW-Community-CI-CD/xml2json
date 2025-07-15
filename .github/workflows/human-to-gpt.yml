@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       payload_raw:
-        description: 'Loosely‑formatted JSON string ("timestamp" may be empty)'
+        description: 'JSON string (timestamp may be empty)'
         required: true
         default: |
           {
@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   intake:
-    runs-on: [self-hosted, windows]
+    runs-on: windows-latest        # use GitHub‑hosted runner; change if you need self‑hosted
     timeout-minutes: 90
     defaults:
       run:
@@ -29,108 +29,74 @@ jobs:
 
     steps:
       # 1 – Checkout
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # 2 – Ensure inbox directory
-      - name: Ensure inbox directory exists
+      # 2 – Ensure inbox dir
+      - name: Ensure gpt/inbox exists
         run: |
           New-Item -ItemType Directory -Path gpt/inbox -Force
 
-      # 3 – Setup Node (for AJV)
-      - name: Setup Node.js
+      # 3 – Setup Node (AJV)
+      - name: Setup Node
         uses: actions/setup-node@v3
         with:
           node-version: '18'
 
-      # 4 – Parse + validate payload
-      - name: Parse and validate input
-        id: validate
+      # 4 – Parse & validate payload
+      - name: Parse + validate
+        id: parse
         env:
-          PAYLOAD_RAW: ${{ github.event.inputs.payload_raw }}
+          RAW: ${{ github.event.inputs.payload_raw }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $payload = ConvertFrom-Json -InputObject $env:PAYLOAD_RAW
-          if (-not $payload.PSObject.Properties['timestamp']) {
-            $payload | Add-Member -NotePropertyName timestamp -NotePropertyValue ''
+          $p = ConvertFrom-Json $env:RAW
+          if (-not $p.PSObject.Properties['timestamp']) {
+            $p | Add-Member timestamp ''
           }
-          $payload.timestamp = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-          if ($payload.phase -ne 'inbox') { Write-Error "❌ phase must be 'inbox'." }
-          npm install -g ajv-cli@5 ajv-formats@2 | Out-Null
-          $temp = Join-Path $env:RUNNER_TEMP 'payload.json'
-          $payload | ConvertTo-Json -Depth 10 | Out-File -Encoding utf8 -FilePath $temp
-          ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $temp
-          $inboxPath = "gpt/inbox/${{ github.run_number }}.json"
-          Copy-Item -Path $temp -Destination $inboxPath
+          $p.timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+          if ($p.phase -ne 'inbox') { Write-Error "phase must be inbox" }
+          npm i -g ajv-cli@5 ajv-formats@2 | Out-Null
+          $tmp = Join-Path $env:RUNNER_TEMP payload.json
+          $p | ConvertTo-Json -Depth 10 | Out-File $tmp -Encoding utf8
+          ajv validate -c ajv-formats -s gpt/schemas/intake-v1.json -d $tmp
+          Copy-Item $tmp "gpt/inbox/${{ github.run_number }}.json"
 
-      # 5 – Upload artifact
-      - name: Upload intake artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: gpt-intake-${{ github.run_number }}
-          path: gpt/inbox/${{ github.run_number }}.json
-
-      # 6 – Commit & push (PR fallback)
-      - name: Commit & push (PR fallback)
-        id: commit
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add gpt/inbox
-          git commit -m "🤖 GPT intake: add payload ${{ github.run_number }}" 2>$null
-          git push origin HEAD:main 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            "PR_URL=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          } else {
-            $branch = "gpt-input-${{ github.run_number }}"
-            git push -u origin HEAD:$branch
-            $pr = gh pr create --base main --head $branch --title "GPT Intake ${{ github.run_number }}" --body "Automated intake PR"
-            "PR_URL=$pr" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          }
-
-      # 7 – Open tracking issue
+      # 5 – Open tracking issue with sentinel block
       - name: Open tracking issue
-        id: issue
+        id: track
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_URL: ${{ steps.commit.outputs.PR_URL }}
         run: |
-          $ts = "${{ github.run_number }}"
-          $instruction = @"
-          **Action required →**  
-          Copy **this entire block** (including this line) and paste it as a **new comment** on this issue.  
-          _Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
-          "@
-          if ($env:PR_URL) {
-            $body = "Payload timestamp: $ts`n`nRelated PR: $env:PR_URL`n`n$instruction"
-          } else {
-            $body = "Payload timestamp: $ts`n`n$instruction"
-          }
-          $issue = gh issue create --title "GPT Intake $ts" --body $body --label "gpt-intake"
-          $num = $issue -replace '.*/', ''
-          "ISSUE_NUMBER=$num" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          $run   = "${{ github.run_number }}"
+          $block = "<!-- GPT-BEGIN -->`nPayload timestamp: $run`n<!-- GPT-END -->"
+          $body  = "$block`n`nCopy **the block above** (including GPT-BEGIN/END) and paste it as a comment."
+          $url   = gh issue create --title "GPT Intake $run" --body $body --label gpt-intake
+          $num   = $url -replace '.*/', ''
+          "ISSUE=$num" >> $env:GITHUB_OUTPUT
 
-      # 8 – Wait for exact‑match comment (robust normalization)
-      - name: Wait for matching comment (max 60 min)
+      # 6 – Wait for exact block match (CR/LF agnostic)
+      - name: Wait for matching comment (60 min)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ISSUE_NUMBER: ${{ steps.issue.outputs.ISSUE_NUMBER }}
+          ISSUE: ${{ steps.track.outputs.ISSUE }}
         run: |
-          function Normalize([string]$s) { return ($s -replace "`r", "").TrimEnd() }
-          $expected = Normalize (gh issue view $env:ISSUE_NUMBER --json body --jq ".body")
-          for ($i = 1; $i -le 60; $i++) {
-            Write-Output "Polling issue #$env:ISSUE_NUMBER (attempt $i/60)…"
-            $comments = gh issue view $env:ISSUE_NUMBER --json comments --jq ".comments[].body"
+          function ExtractBlock($text) {
+            $t = ($text -replace "`r","")            # strip CR
+            if ($t -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->') {
+              return $Matches[1].Trim()
+            } else { return '' }
+          }
+
+          $expected = ExtractBlock (gh issue view $env:ISSUE --json body --jq ".body")
+          for ($i=1; $i -le 60; $i++) {
+            Write-Output "Poll $i/60…"
+            $comments = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
             foreach ($c in $comments) {
-              if (Normalize $c -eq $expected) {
-                Write-Output "✅ Matching comment detected – workflow continues."
+              if (ExtractBlock $c -eq $expected) {
+                Write-Output "✅ Match detected"
                 exit 0
               }
             }
-            Start-Sleep -Seconds 60
+            Start-Sleep 60
           }
-          Write-Error "❌ No matching comment after 60 minutes – failing job."
+          Write-Error "No matching comment after 60 min"
