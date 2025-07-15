@@ -1,0 +1,44 @@
+phase1:
+- issue_id: 1
+  title: "Generate developer-oriented documentation for VipbJsonTool"
+  status: open
+  tags: ["documentation", "vipbjsontool"]
+  path: .gpt/issues/phase1/issue1.md
+  created_at: "2025-07-08T12:00:00Z"
+- issue_id: 2
+  title: "Create automated test cases (xUnit) for VipbJsonTool"
+  status: open
+  tags: ["testing", "xunit", "vipbjsontool"]
+  path: .gpt/issues/phase1/issue2.md
+  created_at: "2025-07-08T12:05:00Z"
+- issue_id: 3
+  title: "Add CLI usage examples and guidance"
+  status: open
+  tags: ["documentation", "cli", "examples"]
+  path: .gpt/issues/phase1/issue3.md
+  created_at: "2025-07-08T12:10:00Z"
+- issue_id: 4
+  title: "Export the SRS to PDF and other formats"
+  status: open
+  tags: ["documentation", "formatting", "SRS"]
+  path: .gpt/issues/phase1/issue4.md
+  created_at: "2025-07-08T12:15:00Z"
+phase2:
+- issue_id: 5
+  title: "Change pre-commit hook to validate-only (no editor spawn)"
+  status: open
+  tags: ["insight-synch", "srs", "hook"]
+  path: .gpt/issues/phase2/issue5.md
+  created_at: "2025-07-10T09:00:00Z"
+- issue_id: 6
+  title: "Update deliverable wording to remove Marketplace publication"
+  status: open
+  tags: ["insight-synch", "deliverables", "vscext"]
+  path: .gpt/issues/phase2/issue6.md
+  created_at: "2025-07-10T09:05:00Z"
+- issue_id: 7
+  title: "Use Jest (not Mocha) for unit tests in VS Code extension"
+  status: open
+  tags: ["insight-synch", "testing", "vscode"]
+  path: .gpt/issues/phase2/issue7.md
+  created_at: "2025-07-10T09:10:00Z"
