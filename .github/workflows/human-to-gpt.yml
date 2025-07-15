@@ -80,6 +80,7 @@ jobs:
 
           $token
           "@
+
         $url = gh issue create --title "GPT Intake $run" --body "$body" --label gpt-intake
         $num = $url -replace '.*/', ''
         "ISSUE=$num"   >> $env:GITHUB_OUTPUT
