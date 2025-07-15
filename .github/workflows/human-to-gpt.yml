@@ -82,16 +82,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: ${{ steps.track.outputs.ISSUE }}
         run: |
-          function ExtractBlock($t) {
-            ($t -replace "`r","") -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->' | Out-Null
-            return $Matches[1].Trim()
+          function ExtractBlock([string]$t) {
+            $t = $t -replace "`r",""
+            if ($t -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->') {
+              return $Matches[1].Trim()
+            } else {
+              return $null
+            }
           }
-          $exp = ExtractBlock (gh issue view $env:ISSUE --json body --jq ".body")
-          for ($i=1; $i -le 60; $i++) {
+
+          $expected = ExtractBlock (gh issue view $env:ISSUE --json body --jq ".body")
+          if (-not $expected) { Write-Error "Sentinel block missing in issue body"; exit 1 }
+
+          for ($i = 1; $i -le 60; $i++) {
             Write-Host "Polling $i/60…"
             $cBodies = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
             foreach ($c in $cBodies) {
-              if (ExtractBlock $c -eq $exp) {
+              $block = ExtractBlock $c
+              if ($block -and $block -eq $expected) {
                 Write-Host "✅ Match detected"
                 exit 0
               }
