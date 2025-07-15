@@ -1,0 +1,7 @@
+{
+  "phase": "inbox",
+  "conversation_id": "xml2json-intake-0001",
+  "timestamp": "2025-07-15T03:32:38Z",
+  "role": "user",
+  "content": "Please ingest gpt/issues/_intake_payload.md and create GitHub issues."
+}
