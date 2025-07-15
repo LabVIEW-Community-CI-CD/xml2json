@@ -133,10 +133,10 @@ jobs:
       run: |
         $ts = "${{ github.run_number }}"
         $block = @"
-**Action required →**
-Copy **this entire block** (including this line) and paste it as a **new comment** on this issue.
-_Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
-"@
+        **Action required →**
+        Copy **this entire block** (including this line) and paste it as a **new comment** on this issue.
+        _Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
+        "@
 
         $body = if ($env:PR_URL) {
           "Payload timestamp: $ts`n`nRelated PR: $env:PR_URL`n`n$block"
