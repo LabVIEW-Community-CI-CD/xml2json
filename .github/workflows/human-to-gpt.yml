@@ -22,37 +22,26 @@ permissions:
 
 jobs:
   intake:
-    runs-on: windows-latest      # change if you must use self‑hosted
+    runs-on: windows-latest
     timeout-minutes: 90
     defaults:
       run:
         shell: pwsh
 
     steps:
-      # ------------------------------------------------------------
-      # 1: Checkout
-      # ------------------------------------------------------------
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # 2: Ensure gpt/inbox directory
-      # ------------------------------------------------------------
-      - name: Ensure inbox dir
-        run: New-Item -ItemType Directory -Path gpt/inbox -Force
+      - name: Ensure gpt/inbox directory exists
+        run: |
+          New-Item -ItemType Directory -Path gpt/inbox -Force
 
-      # ------------------------------------------------------------
-      # 3: Setup Node.js (AJV)
-      # ------------------------------------------------------------
-      - name: Setup Node
+      - name: Setup Node (for AJV)
         uses: actions/setup-node@v3
         with:
           node-version: 18
 
-      # ------------------------------------------------------------
-      # 4: Parse + validate payload
-      # ------------------------------------------------------------
-      - name: Parse + validate input
+      - name: Parse and validate input
         id: parse
         env:
           RAW: ${{ github.event.inputs.payload_raw }}
@@ -71,10 +60,7 @@ jobs:
 
           Copy-Item $tmp "gpt/inbox/${{ github.run_number }}.json"
 
-      # ------------------------------------------------------------
-      # 5: Open tracking issue with sentinel block
-      # ------------------------------------------------------------
-      - name: Open tracking issue
+      - name: Open tracking issue (sentinel block)
         id: track
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -85,88 +71,60 @@ jobs:
           $sentinel
 
           Copy **this entire block** (including GPT-BEGIN/END) and paste it as a **new comment** on this issue.
-          _Do not add or remove anything._  The CI job will resume when it detects an exact‑match comment.
+          _Do not add or remove anything._  The CI job resumes when it detects an exact‑match comment.
           "@
           $url = gh issue create --title "GPT Intake $run" --body $body --label gpt-intake
           $num = $url -replace '.*/', ''
           "ISSUE=$num" >> $env:GITHUB_OUTPUT
 
-      # ------------------------------------------------------------
-      # 6: Wait for exact block match (CR/LF agnostic)
-      # ------------------------------------------------------------
-      - name: Wait for matching comment (≤ 60 min)
+      - name: Wait for exact comment match (≤ 60 min)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: ${{ steps.track.outputs.ISSUE }}
         run: |
-          function ExtractBlock($text) {
-            ($text -replace "`r","") -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->' | Out-Null
+          function ExtractBlock($t) {
+            ($t -replace "`r","") -match '(?s)<!-- GPT-BEGIN -->(.*?)<!-- GPT-END -->' | Out-Null
             return $Matches[1].Trim()
           }
-
-          $expected = ExtractBlock (gh issue view $env:ISSUE --json body --jq ".body")
-
-          for ($i = 1; $i -le 60; $i++) {
-            Write-Host "Polling (attempt $i/60)…"
-            $comments = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
-            foreach ($c in $comments) {
-              if (ExtractBlock($c) -eq $expected) {
-                Write-Host "✅ Block match detected"
+          $exp = ExtractBlock (gh issue view $env:ISSUE --json body --jq ".body")
+          for ($i=1; $i -le 60; $i++) {
+            Write-Host "Polling $i/60…"
+            $cBodies = gh issue view $env:ISSUE --json comments --jq ".comments[].body"
+            foreach ($c in $cBodies) {
+              if (ExtractBlock $c -eq $exp) {
+                Write-Host "✅ Match detected"
                 exit 0
               }
             }
             Start-Sleep 60
           }
-          Write-Error "❌ No matching comment after 60 min"
+          Write-Error "No matching comment after 60 min"
 
-      # ------------------------------------------------------------
-      # 7: Create issues from intake payload
-      # ------------------------------------------------------------
       - name: Create issues from _intake_payload.md
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $file = "gpt/issues/_intake_payload.md"
-          if (-not (Test-Path $file)) {
-            Write-Error "$file not found"
-          }
+          if (-not (Test-Path $file)) { Write-Error "$file not found" }
 
-          $content = Get-Content $file -Raw
+          $data = Get-Content $file -Raw -Encoding UTF8
+          $parts = ($data -replace "`r","") -split "(?m)^\s*---\s*$"
+          $count = 0
+          foreach ($p in $parts) {
+            $p = $p.Trim()
+            if (-not $p) { continue }
 
-          # split on --- lines with regex that matches full line of dashes
-          $blocks = ($content -replace "`r","") -split "(?m)^\s*---\s*$"
-
-          $created = 0
-          foreach ($block in $blocks) {
-            $b = $block.Trim()
-            if (-not $b) { continue }
-
-            # Header line e.g. **Phase 1 – Issue 1**
-            $header, $rest = $b -split "`n",2
+            $header, $rest = $p -split "`n", 2
             if (-not $rest) { continue }
 
-            # Title line (starts with '# ')
-            if ($rest -match "(?m)^#\s+(.+?)\s*$") {
-              $title = $Matches[1].Trim()
-            } else { continue }
+            if ($rest -match "(?m)^#\s+(.+?)\s*$") { $title = $Matches[1].Trim() } else { continue }
+            if ($header -match "Phase\s+(\d+)") { $label = "phase$($Matches[1])" } else { $label = "gpt" }
 
-            # Derive label phaseX from header
-            if ($header -match 'Phase\s+(\d+)') {
-              $label = "phase$($Matches[1])"
-            } else {
-              $label = "unlabelled"
-            }
-
-            # Body for GitHub issue (everything after title line)
-            $bodyStart = $rest.IndexOf("`n") + 1
-            $body = $rest.Substring($bodyStart).Trim()
-
-            # Write body to temp file to preserve newlines
+            $body = $rest.Substring($rest.IndexOf("`n")+1).Trim()
             $tmp = "$env:RUNNER_TEMP\issue.md"
             $body | Out-File $tmp -Encoding utf8
 
             gh issue create --title "$title" --body-file "$tmp" --label "$label"
-            $created++
+            $count++
           }
-
-          Write-Host "Created $created issues."
+          Write-Host "Created $count issues."
