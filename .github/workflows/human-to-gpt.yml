@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   intake:
-    runs-on: self-hosted           # change to self‑hosted if needed
+    runs-on: windows-latest
     timeout-minutes: 90
     defaults:
       run:
@@ -76,11 +76,11 @@ jobs:
         # Create token and issue body
         $token = "TOKEN-" + ([guid]::NewGuid().ToString("N").Substring(0,8))
         $body  = @"
-## Action required
-Copy this exact line and paste it as a **new comment**:
+        ## Action required
+        Copy this exact line and paste it as a **new comment**:
 
-$token
-"@
+        $token
+        "@
 
         # Open tracking issue
         $url = gh issue create `
@@ -98,7 +98,7 @@ $token
     # 4b. Execute helper script
     # ------------------------------------------------------------
     - name: Open tracking issue
-      id: track                       # consumers of outputs stay unchanged
+      id: track
       shell: pwsh
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
